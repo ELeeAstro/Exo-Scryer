@@ -1,0 +1,158 @@
+"""
+opacity_ck.py
+==============
+
+Overview:
+    Correlated-k opacity module for handling pre-banded opacity tables with
+    Gauss quadrature integration over g-points.
+
+    Similar to opacity_line.py but includes an extra g-dimension for the
+    correlated-k method.
+
+Sections to complete:
+    - Usage
+    - Key Functions
+    - Notes
+"""
+
+from typing import Dict
+
+import jax
+import jax.numpy as jnp
+
+import build_opacities as XS
+from data_constants import amu
+
+_SIGMA_CACHE: jnp.ndarray | None = None
+
+
+def _load_sigma_cube() -> jnp.ndarray:
+    global _SIGMA_CACHE
+    if _SIGMA_CACHE is None:
+        _SIGMA_CACHE = XS.ck_sigma_cube()
+    return _SIGMA_CACHE
+
+
+def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp.ndarray) -> jnp.ndarray:
+    """
+    Bilinear interpolation of correlated-k cross sections on (log T, log P) grids.
+
+    sigma_cube shape: (n_species, n_temp, n_pressure, n_wavelength, n_g)
+    Returns: (n_species, n_layers, n_wavelength, n_g)
+    """
+    sigma_cube = _load_sigma_cube()
+    pressure_grid = XS.ck_pressure_grid()
+    temperature_grids = XS.ck_temperature_grids()
+
+    # Convert to log10 space for interpolation
+    log_p_grid = jnp.log10(pressure_grid)
+    log_p_layers = jnp.log10(layer_pressures_bar)
+    log_t_layers = jnp.log10(layer_temperatures)
+
+    # Find pressure bracket indices and weights in log space (same for all species)
+    p_idx = jnp.searchsorted(log_p_grid, log_p_layers) - 1
+    p_idx = jnp.clip(p_idx, 0, len(log_p_grid) - 2)
+    p_weight = (log_p_layers - log_p_grid[p_idx]) / (log_p_grid[p_idx + 1] - log_p_grid[p_idx])
+    p_weight = jnp.clip(p_weight, 0.0, 1.0)
+
+    def _interp_one_species(sigma_4d, temp_grid):
+        """Interpolate cross sections for one species."""
+        # sigma_4d: (n_temp, n_pressure, n_wavelength, n_g)
+        # temp_grid: (n_temp,)
+
+        # Convert temperature grid to log space
+        log_t_grid = jnp.log10(temp_grid)
+
+        # Find temperature bracket indices and weights in log space
+        t_idx = jnp.searchsorted(log_t_grid, log_t_layers) - 1
+        t_idx = jnp.clip(t_idx, 0, len(log_t_grid) - 2)
+        t_weight = (log_t_layers - log_t_grid[t_idx]) / (log_t_grid[t_idx + 1] - log_t_grid[t_idx])
+        t_weight = jnp.clip(t_weight, 0.0, 1.0)
+
+        # Get four corners of bilinear interpolation rectangle
+        # Indexing: sigma_4d[temp, pressure, wavelength, g]
+        s_t0_p0 = sigma_4d[t_idx, p_idx, :, :]              # shape: (n_layers, n_wavelength, n_g)
+        s_t0_p1 = sigma_4d[t_idx, p_idx + 1, :, :]
+        s_t1_p0 = sigma_4d[t_idx + 1, p_idx, :, :]
+        s_t1_p1 = sigma_4d[t_idx + 1, p_idx + 1, :, :]
+
+        # Bilinear interpolation: first interpolate in pressure, then temperature
+        # Expand weights to broadcast over wavelength and g dimensions
+        s_t0 = (1.0 - p_weight)[:, None, None] * s_t0_p0 + p_weight[:, None, None] * s_t0_p1
+        s_t1 = (1.0 - p_weight)[:, None, None] * s_t1_p0 + p_weight[:, None, None] * s_t1_p1
+        s_interp = (1.0 - t_weight)[:, None, None] * s_t0 + t_weight[:, None, None] * s_t1
+
+        return s_interp
+
+    # Vectorize over all species
+    sigma_log = jax.vmap(_interp_one_species)(sigma_cube, temperature_grids)
+    return 10.0 ** sigma_log
+
+
+def zero_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
+    """
+    Return zero opacity (placeholder for when ck opacities are not used).
+
+    Args:
+        state: State dictionary containing wavelengths and layer pressures
+        params: Parameter dictionary
+
+    Returns:
+        Zero array of shape (n_layers, n_wavelength, n_g)
+    """
+    layer_pressures = state["p_lay"]
+    wavelengths = state["wl"]
+    layer_count = jnp.size(layer_pressures)
+    wavelength_count = jnp.size(wavelengths)
+
+    # Get number of g-points from loaded ck data
+    g_weights = XS.ck_g_weights()
+    n_g = jnp.size(g_weights)
+
+    return jnp.zeros((layer_count, wavelength_count, n_g))
+
+
+def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
+    """
+    Compute correlated-k opacity (interpolated and normalized, keeping g-dimension).
+
+    Interpolates cross sections at layer conditions, applies normalization for mixing
+    ratios, and returns opacity with g-dimension intact for later integration.
+
+    Args:
+        state: State dictionary containing:
+            - p_lay: Layer pressures (microbar)
+            - T_lay: Layer temperatures (K)
+            - mu_lay: Mean molecular weight per layer
+            - wl: Wavelengths
+        params: Parameter dictionary containing mixing ratios (f_{species_name})
+
+    Returns:
+        Opacity array of shape (n_layers, n_wavelength, n_g) in cm^2/g
+    """
+    layer_pressures = state["p_lay"]
+    layer_temperatures = state["T_lay"]
+    layer_mu = state["mu_lay"]
+
+    # Get species names and mixing ratios
+    species_names = XS.ck_species_names()
+    mixing_ratios = jnp.stack([jnp.asarray(params[f"f_{name}"]) for name in species_names])
+
+    # Interpolate cross sections for all species at layer conditions
+    # sigma_values shape: (n_species, n_layers, n_wavelength, n_g)
+    sigma_values = _interpolate_sigma(layer_pressures / 1e6, layer_temperatures)
+
+    # Compute normalization factor (mixing ratio / mean molecular weight)
+    # Shape: (n_species, n_layers)
+    normalization = mixing_ratios[:, None] / (layer_mu[None, :] * amu)
+
+    # Apply normalization
+    # sigma_values: (n_species, n_layers, n_wavelength, n_g)
+    # normalization: (n_species, n_layers, 1, 1) after expansion
+    normalized_sigma = sigma_values * normalization[:, :, None, None]
+
+    # Sum over all species
+    # Shape: (n_layers, n_wavelength, n_g)
+    total_opacity = jnp.sum(normalized_sigma, axis=0)
+
+    return total_opacity

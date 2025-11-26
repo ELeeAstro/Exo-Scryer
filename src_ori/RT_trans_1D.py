@@ -15,25 +15,81 @@ from __future__ import annotations
 
 from typing import Dict, Mapping
 
+import jax
 import jax.numpy as jnp
+import build_opacities as XS
+
+def _get_ck_weights(state):
+    g_weights = state.get("g_weights")
+    if g_weights is not None:
+        return jnp.asarray(g_weights)
+    if not XS.has_ck_data():
+        raise RuntimeError("c-k g-weights not built; run build_opacities() with ck tables.")
+    g_weights = XS.ck_g_weights()
+    if g_weights.ndim > 1:
+        g_weights = g_weights[0]
+    return jnp.asarray(g_weights)
 
 
-def _sum_opacity_components(
+def _sum_opacity_components_ck(
+    state: Dict[str, jnp.ndarray],
+    opacity_components: Mapping[str, jnp.ndarray],
+) -> jnp.ndarray:
+    """
+    Return the summed opacity grid for correlated-k mode.
+
+    Line opacity has shape (nlay, nwl, ng).
+    Other opacities have shape (nlay, nwl) and are broadcast over g-dimension.
+    Returns shape (nlay, nwl, ng).
+    """
+
+    nlay = int(state["nlay"])
+    nwl = int(state["nwl"])
+
+    if not opacity_components:
+        # Need to get ng from ck data
+        g_weights = _get_ck_weights(state)
+        ng = g_weights.shape[-1]
+        return jnp.zeros((nlay, nwl, ng))
+
+    # Get line opacity (3D: nlay, nwl, ng)
+    line_opacity = opacity_components.get("line", None)
+
+    if line_opacity is not None:
+        # Start with line opacity (already has g-dimension)
+        k_tot = line_opacity
+    else:
+        # No line opacity, need to create 3D array
+        g_weights = _get_ck_weights(state)
+        ng = g_weights.shape[-1]
+        k_tot = jnp.zeros((nlay, nwl, ng))
+
+    # Add other components (ray, cia, cloud) - these are 2D
+    # Need to broadcast them over g-dimension
+    for name, component in opacity_components.items():
+        if name != "line":
+            # component shape: (nlay, nwl)
+            # Expand to (nlay, nwl, ng) by broadcasting
+            k_tot = k_tot + component[:, :, None]
+
+    return k_tot
+
+def _sum_opacity_components_lbl(
     state: Dict[str, jnp.ndarray],
     opacity_components: Mapping[str, jnp.ndarray],
 ) -> jnp.ndarray:
     """Return the summed opacity grid for all provided components."""
-
     if opacity_components:
         first = next(iter(opacity_components.values()))
         k_tot = jnp.zeros_like(first)
         for component in opacity_components.values():
             k_tot = k_tot + component
-        return k_tot
+    else:
+        nlay = int(state["nlay"])
+        nwl = int(state["nwl"])
+        k_tot = jnp.zeros((nlay, nwl))
 
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
-    return jnp.zeros((nlay, nwl))
+    return k_tot
 
 
 def _transit_depth_from_opacity(
@@ -85,6 +141,23 @@ def _transit_depth_from_opacity(
     return R_eff2 / (R_s**2)
 
 
+def _transit_depth_ck(
+    state: Dict[str, jnp.ndarray],
+    k_tot: jnp.ndarray,
+) -> jnp.ndarray:
+    """Integrate correlated-k opacities over g-points to obtain transit depth."""
+    g_weights = _get_ck_weights(state)
+    ng = k_tot.shape[-1]
+    g_weights = g_weights[:ng]
+
+    def _depth_for_g(k_slice: jnp.ndarray) -> jnp.ndarray:
+        return _transit_depth_from_opacity(state, k_slice)
+
+    k_tot_g = jnp.moveaxis(k_tot, -1, 0)  # (ng, nlay, nwl)
+    g_depths = jax.vmap(_depth_for_g)(k_tot_g)  # (ng, nwl)
+    return jnp.sum(g_weights[:, None] * g_depths, axis=0)
+
+
 def compute_transit_depth_1d(
     state: Dict[str, jnp.ndarray],
     params: Dict[str, jnp.ndarray],
@@ -108,13 +181,33 @@ def compute_transit_depth_1d(
         Transit depth spectrum (dimensionless) at the native wavelength grid.
     """
 
-    k_tot = _sum_opacity_components(state, opacity_components)
+    D_net: jnp.ndarray
 
-    if "f_cloud" in params and "cloud" in opacity_components:
-        f_cloud = jnp.clip(jnp.asarray(params["f_cloud"]), 0.0, 1.0)
-        k_no_cloud = k_tot - opacity_components["cloud"]
-        D_cloud = _transit_depth_from_opacity(state, k_tot)
-        D_clear = _transit_depth_from_opacity(state, k_no_cloud)
-        return f_cloud * D_cloud + (1.0 - f_cloud) * D_clear
+    if state["ck"] == True:
+        # Corr-k mode: build total opacity then integrate over g-points
+        k_tot = _sum_opacity_components_ck(state, opacity_components)  # (nlay, nwl, ng)
+        if "f_cloud" in params and "cloud" in opacity_components:
+            f_cloud = jnp.clip(jnp.asarray(params["f_cloud"]), 0.0, 1.0)
+            cloud_component = opacity_components["cloud"]
+            if cloud_component.ndim == 2:
+                cloud_component = cloud_component[:, :, None]
+            k_no_cloud = k_tot - cloud_component
+            D_cloud = _transit_depth_ck(state, k_tot)
+            D_clear = _transit_depth_ck(state, k_no_cloud)
+            D_net = f_cloud * D_cloud + (1.0 - f_cloud) * D_clear
+        else:
+            D_net = _transit_depth_ck(state, k_tot)
+    else:
+        # Lbl mode
+        k_tot = _sum_opacity_components_lbl(state, opacity_components) # Return (nlay, nwl)
 
-    return _transit_depth_from_opacity(state, k_tot)
+        if "f_cloud" in params and "cloud" in opacity_components:
+            f_cloud = jnp.clip(jnp.asarray(params["f_cloud"]), 0.0, 1.0)
+            k_no_cloud = k_tot - opacity_components["cloud"]
+            D_cloud = _transit_depth_from_opacity(state, k_tot)
+            D_clear = _transit_depth_from_opacity(state, k_no_cloud)
+            D_net = f_cloud * D_cloud + (1.0 - f_cloud) * D_clear
+        else:
+            D_net = _transit_depth_from_opacity(state, k_tot)
+
+    return D_net

@@ -28,6 +28,20 @@ from registry_line import (
     load_line_registry,
     reset_registry as reset_line_registry,
 )
+from registry_ck import (
+    CKRegistryEntry,
+    has_ck_data,
+    ck_master_wavelength,
+    ck_pressure_grid,
+    ck_temperature_grid,
+    ck_temperature_grids,
+    ck_sigma_cube,
+    ck_species_names,
+    ck_g_points,
+    ck_g_weights,
+    load_ck_registry,
+    reset_registry as reset_ck_registry,
+)
 from registry_cia import (
     CiaRegistryEntry,
     cia_master_wavelength,
@@ -169,6 +183,7 @@ def build_opacities(cfg, obs, exp_dir: Optional[Path] = None):
 
     # Reset all the global registries
     reset_line_registry()
+    reset_ck_registry()
     reset_cia_registry()
     reset_ray_registry()
 
@@ -176,10 +191,26 @@ def build_opacities(cfg, obs, exp_dir: Optional[Path] = None):
     lam_master_full = read_master_wl(cfg, obs, exp_dir=exp_dir)
     lam_master_cut = init_cut_master_wl(obs, lam_master_full, full_grid=cfg.opac.full_grid)
 
-    # Read in or calculate the line, CIA and Rayleigh opacity
+    # Check if using correlated-k or line-by-line opacities
     opac_cfg = getattr(cfg, "opac", None)
-    if opac_cfg is not None and getattr(opac_cfg, "line", None) not in (None, "None"):
-        load_line_registry(cfg, obs, lam_master=lam_master_cut)
+
+    use_ck = cfg.opac.ck
+
+    # Read in or calculate the molecular opacity (either ck or line)
+    if use_ck:
+        # Load correlated-k opacities
+        print("[info] Using correlated-k (c-k) opacities")
+        # Check that ck species list exists
+        ck_species = getattr(opac_cfg, "line", None) if opac_cfg is not None else None
+        if ck_species is not None and ck_species not in (None, "None", "none", True, False):
+            load_ck_registry(cfg, obs, lam_master=lam_master_cut)
+    else:
+        # Load line-by-line opacities
+        print("[info] Using line-by-line (lbl) opacities")
+        if opac_cfg is not None and getattr(opac_cfg, "line", None) not in (None, "None", "none"):
+            load_line_registry(cfg, obs, lam_master=lam_master_cut)
+
+    # Load CIA and Rayleigh opacities (same for both ck and lbl)
     if opac_cfg is not None and getattr(opac_cfg, "cia", None) not in (None, "None"):
         load_cia_registry(cfg, obs, lam_master=lam_master_cut)
     if opac_cfg is not None and getattr(opac_cfg, "ray", None) not in (None, "None"):
@@ -192,9 +223,11 @@ __all__ = [
     "master_wavelength",
     "master_wavelength_cut",
     "LineRegistryEntry",
+    "CKRegistryEntry",
     "CiaRegistryEntry",
     "RayRegistryEntry",
     "has_line_data",
+    "has_ck_data",
     "has_cia_data",
     "has_ray_data",
     "line_master_wavelength",
@@ -205,6 +238,15 @@ __all__ = [
     "line_pick_arrays",
     "line_species_names",
     "load_line_registry",
+    "ck_master_wavelength",
+    "ck_pressure_grid",
+    "ck_temperature_grid",
+    "ck_temperature_grids",
+    "ck_sigma_cube",
+    "ck_species_names",
+    "ck_g_points",
+    "ck_g_weights",
+    "load_ck_registry",
     "load_cia_registry",
     "load_ray_registry",
     "cia_master_wavelength",

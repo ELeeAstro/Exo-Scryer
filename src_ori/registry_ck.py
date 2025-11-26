@@ -73,7 +73,7 @@ def has_ck_data() -> bool:
     return bool(_CK_ENTRIES)
 
 # Function to load petitRADTRANS HDF5 correlated-k opacity data
-def _load_ck_h5(index: int, path: str, target_wavelengths: np.ndarray) -> CKRegistryEntry:
+def _load_ck_h5(index: int, path: str, target_wavelengths: np.ndarray, cfg) -> CKRegistryEntry:
     """
     Load petitRADTRANS HDF5 format correlated-k opacity tables.
 
@@ -99,23 +99,9 @@ def _load_ck_h5(index: int, path: str, target_wavelengths: np.ndarray) -> CKRegi
           The wavelength grid from the table must match the master wavelength grid.
     """
 
+    name = cfg.opac.line[index].species
+
     with h5py.File(path, 'r') as f:
-        # Read molecule name - try different possible keys
-        if 'mol_name' in f:
-            name = f['mol_name'][0]
-            if isinstance(name, bytes):
-                name = name.decode('utf-8')
-        elif 'molecule' in f:
-            name = f['molecule'][0]
-            if isinstance(name, bytes):
-                name = name.decode('utf-8')
-        else:
-            # Try to extract from filename
-            import os
-            basename = os.path.basename(path)
-            # Format: molecule__source__R1000_0.3-50mu.ktable.petitRADTRANS.h5
-            name = basename.split('__')[0]
-        name = str(name)
 
         # Read grids
         pressures = np.asarray(f['p'][:], dtype=float)  # bar, shape (nP,)
@@ -267,7 +253,7 @@ def load_ck_registry(cfg, obs, lam_master: Optional[np.ndarray] = None):
     wavelengths = np.asarray(obs["wl"], dtype=float) if lam_master is None else np.asarray(lam_master, dtype=float)
 
     # Read in the c-k data for each species given by the YAML file - add to the entries list
-    for index, spec in enumerate(cfg.opac.ck):
+    for index, spec in enumerate(cfg.opac.line):
         path = spec.path
         print("[c-k] Reading correlated-k xs for", spec.species, "@", path)
 
@@ -275,7 +261,7 @@ def load_ck_registry(cfg, obs, lam_master: Optional[np.ndarray] = None):
         if not (path.endswith('.h5') or path.endswith('.hdf5')):
             raise ValueError(f"Unsupported file format for {path}. Expected .h5 or .hdf5")
 
-        entry = _load_ck_h5(index, path, wavelengths)
+        entry = _load_ck_h5(index, path, wavelengths, cfg)
         entries.append(entry)
 
     # Now need to pad in the temperature and g dimensions to make all grids to the same size (for JAX)

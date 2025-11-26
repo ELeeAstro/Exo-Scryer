@@ -19,6 +19,7 @@ from vert_alt import hypsometric, hypsometric_variable_g
 from vert_struct import isothermal, Milne, Guillot, Line, Barstow
 
 from opacity_line import zero_line_opacity, compute_line_opacity
+from opacity_ck import zero_ck_opacity, compute_ck_opacity
 from opacity_ray import zero_ray_opacity, compute_ray_opacity
 from opacity_cia import zero_cia_opacity, compute_cia_opacity
 from opacity_cloud import zero_cloud_opacity, compute_grey_cloud_opacity, compute_f18_cloud_opacity
@@ -76,12 +77,16 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     else:
         raise NotImplementedError(f"Unknown vert_struct='{vert_struct}'")
 
+    ck = False
     line_opac_scheme = getattr(phys, "opac_line", "None")
     if line_opac_scheme == "None":
         print(f"[info] Line opacity is None:", line_opac_scheme)
         line_opac_kernel = zero_line_opacity
     elif line_opac_scheme == "lbl":
         line_opac_kernel = compute_line_opacity
+    elif line_opac_scheme == "ck":
+        ck = True
+        line_opac_kernel = compute_ck_opacity
     else:
         raise NotImplementedError(f"Unknown line_opac_scheme='{line_opac_scheme}'")
 
@@ -89,7 +94,7 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     if ray_opac_scheme == "None":
         print(f"[info] Rayleigh opacity is None:", ray_opac_scheme)
         ray_opac_kernel = zero_ray_opacity
-    elif ray_opac_scheme == "lbl":
+    elif ray_opac_scheme == "lbl" or ray_opac_scheme == "ck":
         ray_opac_kernel = compute_ray_opacity
     else:
         raise NotImplementedError(f"Unknown ray_opac_scheme='{ray_opac_scheme}'")
@@ -98,7 +103,7 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     if cia_opac_scheme == "None":
         print(f"[info] CIA opacity is None:", cia_opac_scheme)
         cia_opac_kernel = zero_cia_opacity
-    elif cia_opac_scheme == "lbl":
+    elif cia_opac_scheme == "lbl" or cia_opac_scheme == "ck":
         cia_opac_kernel = compute_cia_opacity
     else:
         raise NotImplementedError(f"Unknown cia_opac_scheme='{cia_opac_scheme}'")
@@ -167,7 +172,15 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
         nd = p_lay / (kb * T_lay)
 
         # State dictionary for physics kernels
+        g_weights = None
+        if ck and XS.has_ck_data():
+            g_weights = XS.ck_g_weights()
+            if g_weights.ndim > 1:
+                g_weights = g_weights[0]
+            g_weights = jnp.asarray(g_weights)
+
         state = {
+            'ck': ck,
             "nwl": nwl,
             "nlay": nlay,
             "wl": wl,
@@ -184,6 +197,8 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
             "nd": nd,
             "mixing_ratios": mix_ratios,
         }
+        if g_weights is not None:
+            state["g_weights"] = g_weights
 
         # Opacity components
         k_line = line_opac_kernel(state, params)

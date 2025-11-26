@@ -57,6 +57,25 @@ def _read_cfg(path: Path):
     return _to_ns(y)
 
 
+def _resolve_path_relative(path_str: str, exp_dir: Path) -> Path:
+    """Resolve relative paths against experiment directory and ancestors."""
+    path_obj = Path(path_str)
+    if path_obj.is_absolute():
+        return path_obj
+
+    base_dirs = [exp_dir]
+    base_dirs.extend(exp_dir.parents)
+    candidates: List[Path] = []
+    for base in base_dirs:
+        candidate = (base / path_obj).resolve()
+        if candidate in candidates:
+            continue
+        candidates.append(candidate)
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else path_obj
+
+
 def _is_fixed_param(p) -> bool:
     dist = str(getattr(p, "dist", "")).lower()
     return dist == "delta" or bool(getattr(p, "fixed", False))
@@ -107,33 +126,38 @@ def _load_observed(exp_dir: Path, cfg):
             "Cannot load observed data."
         )
 
-    data_path = Path(obs_cfg.path)
-    if not data_path.is_absolute():
-        data_path = (exp_dir / data_path).resolve()
+    data_path = _resolve_path_relative(obs_cfg.path, exp_dir)
     if not data_path.exists():
         raise FileNotFoundError(f"Could not find data file: {data_path}")
 
-    arr = np.loadtxt(data_path)
+    arr = np.loadtxt(data_path, dtype=str)
+    if arr.ndim == 1:
+        arr = arr[None, :]
     if arr.ndim != 2 or arr.shape[1] < 1:
         raise ValueError(
             f"Unsupported data format in {data_path}. "
             "Need columns lam[, dlam, y, dy]."
         )
 
-    lam = arr[:, 0]
-    if arr.shape[1] >= 4:
-        dlam = arr[:, 1]
-        y = arr[:, 2]
-        dy = arr[:, 3]
+    lam = arr[:, 0].astype(float)
+    if arr.shape[1] >= 5:
+        dlam = arr[:, 1].astype(float)
+        y = arr[:, 2].astype(float)
+        dy = arr[:, 3].astype(float)
+        resp = arr[:, 4]
+    elif arr.shape[1] == 4:
+        dlam = arr[:, 1].astype(float)
+        y = arr[:, 2].astype(float)
+        dy = arr[:, 3].astype(float)
         resp = np.full_like(lam, "boxcar", dtype=object)
     elif arr.shape[1] == 3:
         dlam = np.zeros_like(lam)
-        y = arr[:, 1]
-        dy = arr[:, 2]
+        y = arr[:, 1].astype(float)
+        dy = arr[:, 2].astype(float)
         resp = np.full_like(lam, "boxcar", dtype=object)
     elif arr.shape[1] == 2:
         dlam = np.zeros_like(lam)
-        y = arr[:, 1]
+        y = arr[:, 1].astype(float)
         dy = None
         resp = np.full_like(lam, "boxcar", dtype=object)
     else:
@@ -213,7 +237,7 @@ def _build_param_draws_from_idata(
     return out, N_total
 
 
-def _bump_opacity_paths_one_level(cfg):
+def _bump_opacity_paths_one_level(cfg, exp_dir: Path):
     """
     Prefix '../' to all *relative* cfg.opac.*.path entries.
 
@@ -222,9 +246,6 @@ def _bump_opacity_paths_one_level(cfg):
     opac = getattr(cfg, "opac", None)
     if opac is None:
         return
-
-    # We go one level up relative to where the YAML paths are interpreted
-    prefix = Path("..")
 
     for attr in dir(opac):
         if attr.startswith("_"):
@@ -240,9 +261,11 @@ def _bump_opacity_paths_one_level(cfg):
                         continue
                     p_str = str(p)
                     # Only touch relative paths
-                    if not Path(p_str).is_absolute():
-                        new_path = str(prefix / p_str)
-                        setattr(spec, "path", new_path)
+                    path_obj = Path(p_str)
+                    if path_obj.is_absolute():
+                        continue
+                    resolved = _resolve_path_relative(p_str, exp_dir)
+                    setattr(spec, "path", str(resolved))
 
         # Handle single objects with .path (in case you ever have those)
         elif hasattr(val, "path"):
@@ -250,9 +273,11 @@ def _bump_opacity_paths_one_level(cfg):
             if not p:
                 continue
             p_str = str(p)
-            if not Path(p_str).is_absolute():
-                new_path = str(prefix / p_str)
-                setattr(val, "path", str(prefix / p_str))
+            path_obj = Path(p_str)
+            if path_obj.is_absolute():
+                continue
+            resolved = _resolve_path_relative(p_str, exp_dir)
+            setattr(val, "path", str(resolved))
 
 
 # ---------------- plotting / main logic ----------------
@@ -277,7 +302,7 @@ def plot_model_band(
     try:
         from build_model import build_forward_model
         from build_opacities import build_opacities, master_wavelength_cut
-        from instru_bandpass import load_bandpass_registry
+        from registry_bandpass import load_bandpass_registry
     except ImportError as e:
         raise ImportError(
             f"Could not import modeling helpers from {src_root}."
@@ -286,7 +311,7 @@ def plot_model_band(
     # Load cfg as SimpleNamespace
     cfg = _read_cfg(cfg_path)
 
-    _bump_opacity_paths_one_level(cfg)
+    _bump_opacity_paths_one_level(cfg, exp_dir)
 
     # Load observed data
     lam, dlam, y_obs, dy_obs, response_mode = _load_observed(exp_dir, cfg)
