@@ -19,6 +19,7 @@ from typing import Dict
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 
 import build_opacities as XS
 from data_constants import amu
@@ -89,6 +90,118 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
     return 10.0 ** sigma_log
 
 
+def _get_ck_quadrature(state: Dict[str, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return shared g-points and quadrature weights."""
+    g_points_all = XS.ck_g_points()
+    g_weights_all = state.get("g_weights")
+    if g_weights_all is None:
+        g_weights_all = XS.ck_g_weights()
+
+    if g_points_all.ndim == 1:
+        g_eval = jnp.asarray(g_points_all)
+    else:
+        g_eval = jnp.asarray(g_points_all[0])
+
+    if g_weights_all.ndim == 1:
+        weights = jnp.asarray(g_weights_all)
+    else:
+        weights = jnp.asarray(g_weights_all[0])
+
+    return g_eval, weights
+
+
+def _rom_mix_band(
+    sigma_stack: jnp.ndarray,
+    vmr_layer: jnp.ndarray,
+    g_points: jnp.ndarray,
+    base_weights: jnp.ndarray,
+) -> jnp.ndarray:
+    """Mix one wavelength band's species using RORR."""
+    ng = sigma_stack.shape[-1]
+    dtype = sigma_stack.dtype
+    rom_weights = jnp.outer(base_weights, base_weights).reshape(-1)
+
+    def body(carry, inputs):
+        prev_mix, prev_vmr = carry
+        sigma_spec, vmr_spec = inputs
+
+        def skip(_):
+            return carry, None
+
+        def apply(_):
+            def init_branch(_):
+                return sigma_spec * vmr_spec, vmr_spec
+
+            def mix_branch(args):
+                prev_mix_val, prev_vmr_val = args
+                vmr_tot = prev_vmr_val + vmr_spec
+                vmr_safe = jnp.maximum(vmr_tot, 1e-30)
+                k_matrix = (prev_mix_val[:, None] + vmr_spec * sigma_spec[None, :]) / vmr_safe
+                k_flat = jnp.reshape(k_matrix, (-1,))
+                sort_idx = jnp.argsort(k_flat)
+                k_sorted = jnp.maximum(k_flat[sort_idx], 1e-99)
+                w_sorted = rom_weights[sort_idx]
+                g_rom = jnp.cumsum(w_sorted)
+                g_rom = g_rom / g_rom[-1]
+                interp_log = jnp.interp(g_points, g_rom, jnp.log10(k_sorted))
+                mix_new = jnp.power(10.0, interp_log) * vmr_tot
+                return mix_new, vmr_tot
+
+            new_carry = lax.cond(
+                prev_vmr <= 0.0,
+                init_branch,
+                mix_branch,
+                operand=(prev_mix, prev_vmr),
+            )
+            return new_carry, None
+
+        return lax.cond(vmr_spec <= 0.0, skip, apply, operand=None)
+
+    init = (jnp.zeros((ng,), dtype=dtype), jnp.asarray(0.0, dtype=dtype))
+    final_state, _ = lax.scan(
+        body,
+        init,
+        xs=(sigma_stack, vmr_layer),
+    )
+    final_mix, _ = final_state
+    return final_mix
+
+
+def _mix_k_tables_rorr(
+    sigma_values: jnp.ndarray,
+    mixing_ratios: jnp.ndarray,
+    g_points: jnp.ndarray,
+    base_weights: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Random overlap (RORR) mixing of correlated-k tables across species.
+
+    sigma_values: (n_species, n_layers, n_wavelength, n_g)
+    mixing_ratios: (n_species, n_layers)
+    """
+    n_species, n_layers, n_wl, n_g = sigma_values.shape
+    dtype = sigma_values.dtype
+    if n_species == 0:
+        return jnp.zeros((n_layers, n_wl, n_g), dtype=dtype)
+
+    if mixing_ratios.ndim == 1:
+        mixing_ratios = jnp.broadcast_to(mixing_ratios[:, None], (n_species, n_layers))
+
+    # Reorder for vmaps: (n_layers, n_wl, n_species, n_g)
+    sigma_layer_major = jnp.transpose(sigma_values, (1, 2, 0, 3))
+    vmr_layer_major = jnp.transpose(mixing_ratios, (1, 0))
+
+    mix_layer = jax.vmap(
+        lambda sigma_layer, vmr_layer: jax.vmap(
+            _rom_mix_band, in_axes=(0, None, None, None)
+        )(sigma_layer, vmr_layer, g_points, base_weights),
+        in_axes=(0, 0),
+    )
+
+    mixed = mix_layer(sigma_layer_major, vmr_layer_major)
+    return mixed
+
+
 def zero_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
     """
     Return zero opacity (placeholder for when ck opacities are not used).
@@ -136,23 +249,24 @@ def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
 
     # Get species names and mixing ratios
     species_names = XS.ck_species_names()
-    mixing_ratios = jnp.stack([jnp.asarray(params[f"f_{name}"]) for name in species_names])
+    mixing_arrays = []
+    for name in species_names:
+        arr = jnp.asarray(params[f"f_{name}"])
+        if arr.ndim == 0:
+            arr = jnp.full((layer_pressures.shape[0],), arr)
+        mixing_arrays.append(arr)
+    mixing_ratios = jnp.stack(mixing_arrays)
 
     # Interpolate cross sections for all species at layer conditions
     # sigma_values shape: (n_species, n_layers, n_wavelength, n_g)
     sigma_values = _interpolate_sigma(layer_pressures / 1e6, layer_temperatures)
 
-    # Compute normalization factor (mixing ratio / mean molecular weight)
-    # Shape: (n_species, n_layers)
-    normalization = mixing_ratios[:, None] / (layer_mu[None, :] * amu)
+    g_points, g_weights = _get_ck_quadrature(state)
 
-    # Apply normalization
-    # sigma_values: (n_species, n_layers, n_wavelength, n_g)
-    # normalization: (n_species, n_layers, 1, 1) after expansion
-    normalized_sigma = sigma_values * normalization[:, :, None, None]
+    # Perform random-overlap mixing
+    mixed_sigma = _mix_k_tables_rorr(sigma_values, mixing_ratios, g_points, g_weights)
 
-    # Sum over all species
-    # Shape: (n_layers, n_wavelength, n_g)
-    total_opacity = jnp.sum(normalized_sigma, axis=0)
+    # Convert to mass opacity (cm^2 / g)
+    total_opacity = mixed_sigma / (layer_mu[:, None, None] * amu)
 
     return total_opacity

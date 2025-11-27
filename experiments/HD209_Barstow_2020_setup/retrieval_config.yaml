@@ -25,8 +25,8 @@ opac:
 
   line:
     - {species: H2O, path: ../opac_data/ck/1H2-16O__POKAZATEL__R1000_0.3-50mu.ktable.petitRADTRANS.h5}
-    #- {species: Na, path: ../opac_data/ck/23Na__Kurucz-Na.R1000_0.3-50mu.ktable.petitRADTRANS.h5}
-    #- {species: K, path: ../opac_data/ck/39K__Kurucz-K.R1000_0.3-50mu.ktable.petitRADTRANS.h5}
+    - {species: Na, path: ../opac_data/ck/23Na__Kurucz-Na.R1000_0.3-50mu.ktable.petitRADTRANS.h5}
+    - {species: K, path: ../opac_data/ck/39K__Kurucz-K.R1000_0.3-50mu.ktable.petitRADTRANS.h5}
   ray:
     - {species: H2}
     - {species: He}
@@ -49,8 +49,8 @@ params:
   
 
   - { name: f_H2O, dist: log_uniform, low: 1e-8,   high: 1e-2,  transform: log, init: 1e-5}
-  #- { name: f_Na, dist: log_uniform, low: 1e-13,   high: 1e-3,  transform: log, init: 1e-6}
-  #- { name: f_K, dist: log_uniform, low: 1e-13,   high: 1e-3,  transform: log, init: 1e-6}
+  - { name: f_Na, dist: log_uniform, low: 1e-13,   high: 1e-3,  transform: log, init: 1e-6}
+  - { name: f_K, dist: log_uniform, low: 1e-13,   high: 1e-3,  transform: log, init: 1e-6}
 
   # - { name: f_cloud, dist: uniform, low: 0.0,   high: 1.0, transform: logit, init: 0.5}
   # - { name: cld_r, dist: log_uniform, low: 1e-3,   high: 1e+2,  transform: log, init: 1e0}

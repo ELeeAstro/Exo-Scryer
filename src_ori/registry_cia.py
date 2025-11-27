@@ -113,7 +113,6 @@ def _load_cia_npz(index: int, path: str, target_wavelengths: np.ndarray) -> CiaR
 
     # Interpolate to the master wavelength grid
     n_temperatures, _ = native_xs.shape
-    print(n_temperatures)
     wavelength_count = target_wavelengths.size
     xs_interp = np.empty((n_temperatures, wavelength_count), dtype=float)
     for idx_temp in range(n_temperatures):
