@@ -40,35 +40,6 @@ def g_at_z(R0, z, g_ref):
 
 def hypsometric_variable_g(p_lev, T_lay, mu_lay, params):
 
-
-    nlev = p_lev.shape[0]
-
-    log_g = jnp.asarray(params["log_g"])
-    R0 = jnp.asarray(params["R_p"]) * R_jup
-
-    g_ref = 10.0 ** log_g
-
-    dlnp = jnp.log(p_lev[:-1] / p_lev[1:])
-
-    # Sweep 1: constant g
-    H0 = (kb * T_lay) / (mu_lay * amu * g_ref)
-    dz0 = H0 * dlnp
-    z1 = jnp.concatenate([jnp.zeros_like(p_lev[:1]), jnp.cumsum(dz0)])
-
-    # Mid-layer altitudes from sweep 1
-    z_mid_1 = 0.5 * (z1[:-1] + z1[1:])
-
-    # Sweep 2: use g at mid-layer (from sweep 1), then integrate upward
-    g_mid = g_at_z(R0, z_mid_1, g_ref)
-    H_mid = (kb * T_lay) / (mu_lay * amu * g_mid)
-    dz = H_mid * dlnp
-    z_lev = jnp.concatenate([jnp.zeros_like(p_lev[:1]), jnp.cumsum(dz)])
-    z_lay = (z_lev[:-1] + z_lev[1:]) / 2.0
-
-    return z_lev, z_lay, dz
-
-def hypsometric_variable_g_step_predictor(p_lev, T_lay, mu_lay, params):
-
     nlev = p_lev.shape[0]
 
     log_g = jnp.asarray(params["log_g"])

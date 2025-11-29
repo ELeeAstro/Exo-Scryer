@@ -34,6 +34,12 @@ from instru_convolve import apply_response_functions
 
 def build_forward_model(cfg, obs, return_highres: bool = False):
 
+    # Extract fixed (delta) parameters from cfg.params
+    fixed_params = {}
+    for param in cfg.params:
+        if param.dist == "delta":
+            fixed_params[param.name] = float(param.value)
+
     # Example: number of layers from YAML
     nlay = int(getattr(cfg.physics, "nlay", 99))
     nlev = nlay + 1
@@ -163,32 +169,35 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     @jax.jit
     def forward_model(params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
 
+        # Merge fixed (delta) parameters with varying parameters
+        full_params = {**fixed_params, **params}
+
         wl = wl_hi
 
         # Dimension constants
         nwl = jnp.size(wl)
 
         # Planet and star radii (R0 is radius at p_bot)
-        R0 = jnp.asarray(params["R_p"]) * R_jup
-        R_s = jnp.asarray(params["R_s"]) * R_sun
+        R0 = jnp.asarray(full_params["R_p"]) * R_jup
+        R_s = jnp.asarray(full_params["R_s"]) * R_sun
 
         # Atmospheric pressure grid
-        p_bot = jnp.asarray(params["p_bot"]) * bar
-        p_top = jnp.asarray(params["p_top"]) * bar
+        p_bot = jnp.asarray(full_params["p_bot"]) * bar
+        p_top = jnp.asarray(full_params["p_top"]) * bar
         p_lev = jnp.logspace(jnp.log10(p_bot), jnp.log10(p_top), nlev)
-        
+
         # Vertical atmospheric T-p layer structure
         p_lay = (p_lev[1:] - p_lev[:-1]) / jnp.log(p_lev[1:]/p_lev[:-1])
-        T_lay = Tp_kernel(p_lay, params)
+        T_lay = Tp_kernel(p_lay, full_params)
 
         # Get the vertical chemical structure (VMRs at each layer)
-        vmr_lay = chemistry_kernel(p_lay, T_lay, params, nlay)
+        vmr_lay = chemistry_kernel(p_lay, T_lay, full_params, nlay)
 
         # Mean molecular weight calculation
-        mu_lay = mu_kernel(params, vmr_lay, nlay)
+        mu_lay = mu_kernel(full_params, vmr_lay, nlay)
 
         # Vertical altitude calculation
-        z_lev, z_lay, dz = altitude_kernel(p_lev, T_lay, mu_lay, params)
+        z_lev, z_lay, dz = altitude_kernel(p_lev, T_lay, mu_lay, full_params)
 
         # Atmospheric density and number density
         rho_lay = (mu_lay * amu * p_lay) / (kb * T_lay)
@@ -224,10 +233,10 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
             state["g_weights"] = g_weights
 
         # Opacity components
-        k_line = line_opac_kernel(state, params)
-        k_ray = ray_opac_kernel(state, params)
-        k_cia = cia_opac_kernel(state, params)
-        k_cld = cld_opac_kernel(state, params)
+        k_line = line_opac_kernel(state, full_params)
+        k_ray = ray_opac_kernel(state, full_params)
+        k_cia = cia_opac_kernel(state, full_params)
+        k_cld = cld_opac_kernel(state, full_params)
 
         opacity_components = {
             "line": k_line,
@@ -237,7 +246,7 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
         }
 
         # Radiative transfer
-        D_hires = rt_kernel(state, params, opacity_components)
+        D_hires = rt_kernel(state, full_params, opacity_components)
 
         # Instrumental convolution → binned spectrum
         D_bin = apply_response_functions(wl, D_hires)

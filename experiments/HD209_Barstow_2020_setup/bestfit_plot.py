@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import yaml
@@ -237,6 +238,53 @@ def _build_param_draws_from_idata(
     return out, N_total
 
 
+def _build_param_draws_from_csv(
+    csv_path: Path,
+    params_cfg: List[SimpleNamespace],
+) -> Dict[str, np.ndarray]:
+    """
+    Build dict name->(N_total,) samples for each param from nested_samples.csv,
+    filling fixed/delta params from their value/init if missing in CSV.
+
+    CSV format (from anesthetic NestedSamples):
+      Row 0: column names
+      Row 1: labels (LaTeX)
+      Row 2: "weights" header
+      Row 3+: data rows
+    """
+    # Read CSV skipping first 2 rows (column names, labels)
+    df = pd.read_csv(csv_path, skiprows=2)
+
+    # Remove empty/unnamed columns and metadata columns
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+
+    # Get parameter names from cfg
+    param_names = [getattr(p, "name", None) for p in params_cfg if getattr(p, "name", None)]
+
+    out: Dict[str, np.ndarray] = {}
+    N_total = len(df)
+
+    for p in params_cfg:
+        name = getattr(p, "name", None)
+        if not name:
+            continue
+
+        if name in df.columns:
+            out[name] = df[name].values
+        elif _is_fixed_param(p):
+            val = _fixed_value_param(p)
+            if val is None:
+                raise ValueError(f"Fixed/delta param '{name}' needs value/init in YAML.")
+            out[name] = np.full((N_total,), float(val), dtype=float)
+        else:
+            raise KeyError(f"Parameter '{name}' not found in CSV {csv_path}.")
+
+    lengths = {k: v.shape[0] for k, v in out.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"Inconsistent parameter lengths: {lengths}")
+    return out, N_total
+
+
 def _bump_opacity_paths_one_level(cfg, exp_dir: Path):
     """
     Prefix '../' to all *relative* cfg.opac.*.path entries.
@@ -290,6 +338,7 @@ def plot_model_band(
     random_seed: int = 123,
     show_data: bool = True,
     show_plot: bool = True,
+    csv_path: str | None = None,
 ):
     cfg_path = Path(config_path).resolve()
     exp_dir = cfg_path.parent
@@ -338,18 +387,27 @@ def plot_model_band(
     # Build the *same* forward model used in the retrieval; we want hi-res + binned
     predict_fn = build_forward_model(cfg, obs, return_highres=True)
 
-    # Load posterior from ArviZ NetCDF
-    posterior_path = exp_dir / "posterior.nc"
-    if not posterior_path.exists():
-        raise FileNotFoundError(f"Missing {posterior_path}. Run the retrieval and save InferenceData first.")
-    idata = az.from_netcdf(posterior_path)
-    posterior_ds = idata.posterior
-
     # Build param draws (name -> (N_total,))
     params_cfg = getattr(cfg, "params", [])
     if not params_cfg:
         raise ValueError("cfg.params is empty or missing; cannot reconstruct parameters.")
-    param_draws, N_total = _build_param_draws_from_idata(posterior_ds, params_cfg)
+
+    # Load samples from either CSV or NetCDF
+    if csv_path is not None:
+        csv_file = Path(csv_path).resolve()
+        if not csv_file.exists():
+            raise FileNotFoundError(f"CSV file not found: {csv_file}")
+        print(f"[model_band] Loading samples from CSV: {csv_file}")
+        param_draws, N_total = _build_param_draws_from_csv(csv_file, params_cfg)
+    else:
+        # Load posterior from ArviZ NetCDF
+        posterior_path = exp_dir / "posterior.nc"
+        if not posterior_path.exists():
+            raise FileNotFoundError(f"Missing {posterior_path}. Run the retrieval and save InferenceData first.")
+        print(f"[model_band] Loading samples from NetCDF: {posterior_path}")
+        idata = az.from_netcdf(posterior_path)
+        posterior_ds = idata.posterior
+        param_draws, N_total = _build_param_draws_from_idata(posterior_ds, params_cfg)
 
     # Sub-sample draws for model evaluation
     rng = np.random.default_rng(random_seed)
@@ -485,6 +543,10 @@ def main():
         "--no-show", action="store_true",
         help="Do not display the plot window (useful on headless systems).",
     )
+    ap.add_argument(
+        "--csv", type=str, default=None,
+        help="Path to nested_samples.csv file (alternative to posterior.nc).",
+    )
     args = ap.parse_args()
 
     max_samples = None if args.max_samples <= 0 else args.max_samples
@@ -496,6 +558,7 @@ def main():
         random_seed=args.seed,
         show_data=not args.no_data,
         show_plot=not args.no_show,
+        csv_path=args.csv,
     )
 
 

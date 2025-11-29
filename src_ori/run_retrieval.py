@@ -124,7 +124,7 @@ def main():
     evidence_info: Dict[str, Any] = {}
     samples_dict: Dict[str, Any] = {}
 
-    # Which high-level sampler to use: "nuts", "hmc", or "jaxns"
+    # Which high-level sampler to use: "nuts", "hmc", "jaxns", "numpyro_ns", or "blackjax_ns"
     engine = cfg.sampling.engine
 
     if engine == "nuts":
@@ -150,6 +150,11 @@ def main():
         # numpyro nested-sampling driver
         from sampler_numpyro_NS import run_nested_numpyro
         samples_dict, evidence_info = run_nested_numpyro(cfg, prep, exp_dir)
+
+    elif engine == "blackjax_ns":
+        # BlackJAX nested-sampling driver
+        from sampler_blackjax_NS import run_nested_blackjax
+        samples_dict, evidence_info = run_nested_blackjax(cfg, prep, exp_dir)
     else:
         raise ValueError(f"Unknown sampling.engine: {engine!r}")
 

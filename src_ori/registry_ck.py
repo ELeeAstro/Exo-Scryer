@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -73,7 +73,7 @@ def has_ck_data() -> bool:
     return bool(_CK_ENTRIES)
 
 # Function to load petitRADTRANS HDF5 correlated-k opacity data
-def _load_ck_h5(index: int, path: str, obs: dict, cfg, use_full_grid: bool = False) -> CKRegistryEntry:
+def _load_ck_h5(index: int, spec, path: str, obs: dict, use_full_grid: bool = False) -> CKRegistryEntry:
     """
     Load petitRADTRANS HDF5 format correlated-k opacity tables.
 
@@ -99,7 +99,7 @@ def _load_ck_h5(index: int, path: str, obs: dict, cfg, use_full_grid: bool = Fal
           This function cuts the table to only wavelengths within observation bands.
     """
 
-    name = cfg.opac.line[index].species
+    name = getattr(spec, "species", f"ck_{index}")
 
     with h5py.File(path, 'r') as f:
 
@@ -175,6 +175,80 @@ def _load_ck_h5(index: int, path: str, obs: dict, cfg, use_full_grid: bool = Fal
         g_points=jnp.asarray(g_points),
         g_weights=jnp.asarray(weights),
         cross_sections=jnp.asarray(kcoeff_log),
+    )
+
+
+def _load_ck_npz(index: int, spec, path: str, obs: dict, use_full_grid: bool = False) -> CKRegistryEntry:
+    """
+    Load correlated-k opacity tables stored in the custom NPZ format.
+
+    Expected NPZ contents:
+        - molecule: species name (string or bytes; optional)
+        - pressure: pressure grid in bar (nP,)
+        - temperature: temperature grid in K (nT,)
+        - wavelength: wavelength grid in microns (nwl,)
+        - g_points: g-point locations (ng,)
+        - g_weights: quadrature weights (ng,)
+        - cross_section: log10 cross-sections (nT, nP, nwl, ng)
+    """
+
+    with np.load(path) as data:
+        cross_section = np.asarray(data["cross_section"], dtype=float)
+        name_raw = data.get("molecule", getattr(spec, "species", f"ck_{index}"))
+        pressures = np.asarray(data["pressure"], dtype=float)
+        temperatures = np.asarray(data["temperature"], dtype=float)
+        wavelengths = np.asarray(data["wavelength"], dtype=float)
+        nG = cross_section.shape[-1]
+        g_points = np.asarray(data.get("g_points", np.linspace(0.0, 1.0, nG)), dtype=float)
+        default_weights = np.ones_like(g_points) / g_points.size if g_points.size > 0 else g_points
+        g_weights = np.asarray(data.get("g_weights", default_weights), dtype=float)
+
+    if isinstance(name_raw, np.ndarray):
+        name = name_raw.tolist()
+        if isinstance(name, list):
+            name = name[0]
+    else:
+        name = name_raw
+    if isinstance(name, bytes):
+        name = name.decode("utf-8")
+    name = str(name)
+
+    if cross_section.ndim != 4:
+        raise ValueError(f"Invalid cross_section shape {cross_section.shape} in {path}; expected 4D array.")
+
+    nT, nP, nW, nG = cross_section.shape
+    if wavelengths.size != nW:
+        raise ValueError(f"Wavelength grid length {wavelengths.size} does not match cross-section axis {nW} in {path}.")
+    if g_points.size != nG:
+        raise ValueError(f"g_point array length {g_points.size} does not match cross-section axis {nG} in {path}.")
+    if g_weights.size != nG:
+        raise ValueError(f"g_weight array length {g_weights.size} does not match cross-section axis {nG} in {path}.")
+
+    if not use_full_grid:
+        wl_obs = np.asarray(obs["wl"], dtype=float)
+        dwl_obs = np.asarray(obs["dwl"], dtype=float)
+        left_edges = wl_obs - dwl_obs
+        right_edges = wl_obs + dwl_obs
+        mask = np.any(
+            (wavelengths[None, :] >= left_edges[:, None]) & (wavelengths[None, :] <= right_edges[:, None]),
+            axis=0,
+        )
+        if not np.any(mask):
+            raise ValueError(f"No CK wavelengths for {name} lie within observation bins.")
+        wavelengths = wavelengths[mask]
+        cross_section = cross_section[:, :, mask, :]
+    else:
+        print(f"[c-k] Using full wavelength grid for {name}: {wavelengths.size} bins")
+
+    return CKRegistryEntry(
+        name=name,
+        idx=index,
+        pressures=jnp.asarray(pressures),
+        temperatures=jnp.asarray(temperatures),
+        wavelengths=jnp.asarray(wavelengths),
+        g_points=jnp.asarray(g_points),
+        g_weights=jnp.asarray(g_weights),
+        cross_sections=jnp.asarray(cross_section),
     )
 
 
@@ -263,15 +337,17 @@ def load_ck_registry(cfg, obs, lam_master: Optional[np.ndarray] = None):
     use_full_grid = getattr(cfg.opac, "full_grid", False)
 
     # Read in the c-k data for each species given by the YAML file - add to the entries list
-    for index, spec in enumerate(cfg.opac.line):
+    for index, spec in enumerate(config):
         path = spec.path
         print("[c-k] Reading correlated-k xs for", spec.species, "@", path)
 
         # Check file format
-        if not (path.endswith('.h5') or path.endswith('.hdf5')):
-            raise ValueError(f"Unsupported file format for {path}. Expected .h5 or .hdf5")
-
-        entry = _load_ck_h5(index, path, obs, cfg, use_full_grid=use_full_grid)
+        if path.endswith(".npz"):
+            entry = _load_ck_npz(index, spec, path, obs, use_full_grid=use_full_grid)
+        elif path.endswith('.h5') or path.endswith('.hdf5'):
+            entry = _load_ck_h5(index, spec, path, obs, use_full_grid=use_full_grid)
+        else:
+            raise ValueError(f"Unsupported file format for {path}. Expected .npz, .h5 or .hdf5")
         entries.append(entry)
 
     # Now need to pad in the temperature and g dimensions to make all grids to the same size (for JAX)
