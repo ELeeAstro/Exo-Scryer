@@ -342,7 +342,6 @@ def build_prepared(
             logp += bijectors_tuple[i].log_abs_det_jac(u_vec[i])
         return logp
 
-    @jax.jit
     def logprob(u_vec: jnp.ndarray) -> jnp.ndarray:
         return loglik_u(u_vec) + logprior_u(u_vec)
 

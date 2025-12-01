@@ -3,12 +3,15 @@ vert_chem.py
 ============
 
 Overview:
-    TODO: Describe the purpose and responsibilities of this module.
+    Vertical chemistry profiles for atmospheric models.
+
+Notes:
+    Species names in config parameters (after stripping f_ or log_10_f_ prefix)
+    must match opacity table species names exactly (including capitalization).
 
 Sections to complete:
     - Usage
     - Key Functions
-    - Notes
 """
 
 from __future__ import annotations
@@ -28,16 +31,22 @@ def constant_vmr(
     params: Dict[str, jnp.ndarray],
     nlay: int,
 ) -> Dict[str, jnp.ndarray]:
+    """
+    Create constant VMR profiles from parameters.
+
+    Species names are taken directly from parameter keys after stripping prefixes.
+    User must ensure these match opacity table species names exactly.
+    """
     del p_lay, T_lay  # unused but kept for consistent signature
 
     vmr: Dict[str, jnp.ndarray] = {}
     for k, v in params.items():
         if k.startswith("log_10_f_"):
-            sp = k[len("log_10_f_") :]
-            vmr[sp] = 10.0 ** jnp.asarray(v)
+            species = k[len("log_10_f_"):]
+            vmr[species] = 10.0 ** jnp.asarray(v)
         elif k.startswith("f_"):
-            sp = k[len("f_") :]
-            vmr[sp] = jnp.asarray(v)
+            species = k[len("f_"):]
+            vmr[species] = jnp.asarray(v)
 
     trace_values = list(vmr.values())
     if trace_values:

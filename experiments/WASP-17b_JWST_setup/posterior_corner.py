@@ -177,6 +177,45 @@ def _load_corner_config(path: Path | None) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _replace_diag_with_kde(
+    fig: plt.Figure,
+    samples: np.ndarray,
+    quantiles: Sequence[float],
+    color: str,
+) -> None:
+    """
+    Swap the diagonal histograms for KDE curves while retaining quantile markers.
+    """
+    n_params = samples.shape[1]
+    try:
+        axes = np.array(fig.axes).reshape(n_params, n_params)
+    except ValueError:
+        print("[posterior_corner] Could not reshape axes grid for KDE replacement.")
+        return
+
+    for idx in range(n_params):
+        ax = axes[idx, idx]
+        xlabel = ax.get_xlabel()
+        ax.clear()
+        sns.kdeplot(
+            samples[:, idx],
+            ax=ax,
+            color=color,
+            linewidth=1.5,
+            fill=True,
+            alpha=0.25,
+            bw_adjust=1.0,
+        )
+        for q in quantiles:
+            val = np.quantile(samples[:, idx], q)
+            ax.axvline(val, color=color, linestyle="--", linewidth=1.0, alpha=0.9)
+        ax.set_yticks([])
+        ax.set_ylabel("")
+        ax.set_xlabel(xlabel)
+        if idx != n_params - 1:
+            ax.set_xticklabels([])
+
+
 def plot_corner(
     posterior_path: Path,
     params: Sequence[str] | None = None,
@@ -185,6 +224,7 @@ def plot_corner(
     config_path: Path | None = None,
     extra_log_params: Sequence[str] | None = None,
     label_map_path: Path | None = None,
+    kde_diag: bool = False,
 ) -> Path:
     """
     Load posterior.nc, select variables, and save a classic corner plot with
@@ -280,6 +320,9 @@ def plot_corner(
     if fig is None:
         raise RuntimeError("corner.corner returned None; no plot generated.")
 
+    if kde_diag:
+        _replace_diag_with_kde(fig, samples, quantiles, contour_color)
+
     # Tighten layout a bit
     fig.subplots_adjust(
         left=0.13, right=0.98, bottom=0.14, top=0.98, wspace=0.07, hspace=0.07
@@ -344,6 +387,11 @@ def main():
         type=str,
         help="Path to YAML/JSON file mapping param names to custom axis labels.",
     )
+    ap.add_argument(
+        "--kde-diag",
+        action="store_true",
+        help="Replace diagonal histograms with KDE curves while keeping quantile markers.",
+    )
     args = ap.parse_args()
 
     posterior_path = Path(args.posterior).resolve()
@@ -356,6 +404,7 @@ def main():
         config_path=config_path,
         extra_log_params=args.log_params,
         label_map_path=label_map_path,
+        kde_diag=args.kde_diag,
     )
 
 

@@ -134,7 +134,7 @@ def _load_line_h5(index: int, path: str, target_wavelengths: np.ndarray) -> Line
         pressures=jnp.asarray(pressures),
         temperatures=jnp.asarray(temperatures),
         wavelengths=jnp.asarray(target_wavelengths),
-        cross_sections=jnp.asarray(xs_interp),
+        cross_sections=jnp.asarray(xs_interp, dtype=jnp.float32),
     )
 
 
@@ -200,7 +200,7 @@ def _load_line_npz(index: int, path: str, target_wavelengths: np.ndarray) -> Lin
         pressures=jnp.asarray(pressures),
         temperatures=jnp.asarray(temperatures),
         wavelengths=jnp.asarray(target_wavelengths),
-        cross_sections=jnp.asarray(xs_interp),
+        cross_sections=jnp.asarray(xs_interp, dtype=jnp.float32),
     )
 
 # Pad the tables to a rectangle (in dimension) - usually only in T as wavelength and pressure grids are the same lengths

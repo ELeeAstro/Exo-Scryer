@@ -43,7 +43,11 @@ def make_jaxns_model(cfg, prep: Prepared) -> Model:
     y_obs = jnp.asarray(prep.y)
     dy_obs = jnp.asarray(prep.dy)
 
-    params_cfg = cfg.params  # iterable of parameter objects from YAML
+    # Only sample non-delta parameters; fixed values are injected inside the forward model.
+    params_cfg = [
+        p for p in cfg.params
+        if str(getattr(p, "dist", "")).lower() != "delta"
+    ]
 
     # ----- prior_model: generator of jaxns.Prior objects -----
     def prior_model():
@@ -61,15 +65,6 @@ def make_jaxns_model(cfg, prep: Prepared) -> Model:
             dist_name = str(getattr(p, "dist", "")).lower()
             if not dist_name:
                 raise ValueError(f"Parameter '{name}' needs a 'dist' field.")
-
-            # ----- fixed parameter (delta): not a Bayesian RV -----
-            if dist_name == "delta":
-                val = getattr(p, "value", getattr(p, "init", None))
-                if val is None:
-                    raise ValueError(f"delta param '{name}' needs 'value' or 'init' in YAML.")
-                theta = jnp.asarray(float(val))
-                params[name] = theta
-                continue
 
             # ----- sampled priors -----
             if dist_name in ("uniform",):
@@ -98,7 +93,7 @@ def make_jaxns_model(cfg, prep: Prepared) -> Model:
     def log_likelihood(theta_map: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         """
         theta_map is exactly what prior_model() returned:
-        a dict[str, jnp.ndarray] with your physical parameters.
+        only sampled parameters (fixed/delta values live inside the forward model).
         """
         # predict_fn already knows lam, dlam etc. according to Prepared
         mu = prep.fm(theta_map)  # (N_obs,)

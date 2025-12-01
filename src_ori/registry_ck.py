@@ -174,7 +174,7 @@ def _load_ck_h5(index: int, spec, path: str, obs: dict, use_full_grid: bool = Fa
         wavelengths=jnp.asarray(wavelengths_cut),
         g_points=jnp.asarray(g_points),
         g_weights=jnp.asarray(weights),
-        cross_sections=jnp.asarray(kcoeff_log),
+        cross_sections=jnp.asarray(kcoeff_log, dtype=jnp.float32),
     )
 
 
@@ -248,7 +248,7 @@ def _load_ck_npz(index: int, spec, path: str, obs: dict, use_full_grid: bool = F
         wavelengths=jnp.asarray(wavelengths),
         g_points=jnp.asarray(g_points),
         g_weights=jnp.asarray(g_weights),
-        cross_sections=jnp.asarray(cross_section),
+        cross_sections=jnp.asarray(cross_section, dtype=jnp.float32),
     )
 
 
@@ -328,8 +328,20 @@ def load_ck_registry(cfg, obs, lam_master: Optional[np.ndarray] = None):
 
     entries: List[CKRegistryEntry] = []
 
-    config = getattr(cfg.opac, "ck", None)
-    if not config:
+    # When cfg.opac.ck is True (boolean), species are listed in cfg.opac.line
+    # When cfg.opac.ck is a list, it contains the species directly
+    ck_mode = getattr(cfg.opac, "ck", None)
+    if not ck_mode:
+        reset_registry()
+        return
+
+    # Get species list: if ck is True/False, use cfg.opac.line; otherwise use ck itself
+    if isinstance(ck_mode, bool):
+        config = getattr(cfg.opac, "line", None)
+    else:
+        config = ck_mode
+
+    if not config or config in ("None", "none"):
         reset_registry()
         return
 

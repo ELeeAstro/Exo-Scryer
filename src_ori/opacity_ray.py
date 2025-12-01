@@ -52,20 +52,14 @@ def compute_ray_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nda
     if master_wavelength.shape != wavelengths.shape:
         raise ValueError("Rayleigh wavelength grid must match forward-model grid.")
 
-    sigma_values = XR.ray_sigma_table()
+    sigma_log = XR.ray_sigma_table()
+    sigma_values = jnp.power(10.0, sigma_log.astype(jnp.float64))
     species_names = XR.ray_species_names()
 
+    # Direct lookup - species names must match VMR keys exactly
     mixing_ratio_list = []
     for name in species_names:
-        # Try direct lookup first, then fall back to f_ prefix
-        if name in layer_vmr:
-            value = layer_vmr[name]
-        elif f"f_{name}" in layer_vmr:
-            value = layer_vmr[f"f_{name}"]
-        else:
-            raise KeyError(f"Missing Rayleigh mixing ratio for species '{name}'")
-
-        value = jnp.asarray(value)
+        value = jnp.asarray(layer_vmr[name])
         if value.ndim == 0:
             mixing_ratio_list.append(jnp.full((layer_count,), value))
         elif value.ndim == 1:

@@ -223,7 +223,15 @@ def load_ray_registry(cfg, obs, lam_master: Optional[np.ndarray] = None) -> None
         name = getattr(spec, "species", str(spec))
         print("[info] computing Rayleigh xs for", name)
         xs = _compute_species_sigma(name, wavelengths)
-        entries.append(RayRegistryEntry(name=name, idx=index, wavelengths=jnp.asarray(wavelengths), cross_sections=jnp.asarray(xs)))
+        log_xs = np.log10(xs)
+        entries.append(
+            RayRegistryEntry(
+                name=name,
+                idx=index,
+                wavelengths=jnp.asarray(wavelengths),
+                cross_sections=jnp.asarray(log_xs, dtype=jnp.float32),
+            )
+        )
     _RAY_ENTRIES = tuple(entries)
     if not _RAY_ENTRIES:
         reset_registry()

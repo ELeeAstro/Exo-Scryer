@@ -146,11 +146,6 @@ def main():
         from sampler_jaxns_NS import run_nested_jaxns
         samples_dict, evidence_info = run_nested_jaxns(cfg, prep, exp_dir)
 
-    elif engine == "numpyro_ns":
-        # numpyro nested-sampling driver
-        from sampler_numpyro_NS import run_nested_numpyro
-        samples_dict, evidence_info = run_nested_numpyro(cfg, prep, exp_dir)
-
     elif engine == "blackjax_ns":
         # BlackJAX nested-sampling driver
         from sampler_blackjax_NS import run_nested_blackjax

@@ -85,10 +85,6 @@ def _interpolate_sigma(layer_temperatures: jnp.ndarray) -> jnp.ndarray:
     return 10.0 ** sigma_log
 
 
-def _is_hminus(name: str) -> bool:
-    s = str(name).strip().lower().replace(" ", "")
-    return s in {"h-", "h−", "hminus", "hm", "hminusion"}
-
 def _compute_pair_weight(
     name: str,
     layer_count: int,
@@ -98,47 +94,31 @@ def _compute_pair_weight(
     Compute CIA pair weight from VMR dictionary.
 
     Args:
-        name: CIA species name (e.g., "H2-H2", "H2-He", "H-" for H-minus)
+        name: CIA species name (e.g., "H2-H2", "H2-He", "H-")
         layer_count: Number of atmospheric layers
-        layer_vmr: VMR dictionary indexed by species name
+        layer_vmr: VMR dictionary (species names must match exactly)
 
     Returns:
         Per-layer weight array of shape (nlay,)
     """
-    # --- special case: H- bound-free continuum uses only Hminus ---
-    if _is_hminus(name):
-        # accept a few common spellings for convenience
-        for key in ("Hminus", "hminus", "H-", "h-", "Hm", "hm"):
-            if key in layer_vmr:
-                w = jnp.asarray(layer_vmr[key])
-                return jnp.broadcast_to(w, (layer_count,))
-        # Try with f_ prefix as fallback
-        for key in ("f_Hminus", "f_hminus", "f_H-", "f_h-", "f_Hm", "f_hm"):
-            if key in layer_vmr:
-                w = jnp.asarray(layer_vmr[key])
-                return jnp.broadcast_to(w, (layer_count,))
-        raise KeyError(
-            "Missing H- abundance parameter. Provide one of: "
-            "vmr_lay['Hminus'] (preferred), or vmr_lay['H-'], vmr_lay['Hm']."
-        )
+    name_clean = name.strip()
 
-    # --- normal CIA: requires 'A-B' and uses product of mixing ratios ---
-    parts = name.split("-")
-    if len(parts) != 2 or (parts[0] == "") or (parts[1] == ""):
-        raise ValueError(f"CIA species name '{name}' must be of form 'A-B' (or 'H-' special case).")
-    species_a, species_b = parts
+    # Special case: H- bound-free continuum uses single species
+    if "-" not in name_clean or name_clean == "H-":
+        # Single species (H- bound-free)
+        w = jnp.asarray(layer_vmr[name_clean])
+        return jnp.broadcast_to(w, (layer_count,))
 
-    def _resolve_ratio(species: str) -> jnp.ndarray:
-        # Try direct lookup first, then f_ prefix
-        if species in layer_vmr:
-            return jnp.asarray(layer_vmr[species])
-        key = f"f_{species}"
-        if key in layer_vmr:
-            return jnp.asarray(layer_vmr[key])
-        raise KeyError(f"Missing CIA mixing parameter for species '{species}'")
+    # Normal CIA pair: "H2-He" -> product of H2 and He VMRs
+    parts = name_clean.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"CIA species '{name}' must be 'A-B' or 'H-' format")
 
-    ratio_a = jnp.broadcast_to(_resolve_ratio(species_a), (layer_count,))
-    ratio_b = jnp.broadcast_to(_resolve_ratio(species_b), (layer_count,))
+    species_a, species_b = parts[0], parts[1]
+    ratio_a = jnp.asarray(layer_vmr[species_a])
+    ratio_b = jnp.asarray(layer_vmr[species_b])
+    ratio_a = jnp.broadcast_to(ratio_a, (layer_count,))
+    ratio_b = jnp.broadcast_to(ratio_b, (layer_count,))
     return ratio_a * ratio_b
 
 
@@ -174,15 +154,16 @@ def compute_cia_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nda
     sigma_values = _interpolate_sigma(layer_temperatures)  # (nspecies, nlay, nwl)
     species_names = XS.cia_species_names()
 
+    # Compute pair weights for each CIA species (string ops happen once at trace time)
     pair_weights = jnp.stack(
         [_compute_pair_weight(name, layer_count, layer_vmr) for name in species_names],
         axis=0,
     )  # (nspecies, nlay)
 
-
+    # Determine normalization based on whether species is H- or CIA pair
     # - CIA pairs:   nd^2 / rho
     # - H-:          nd / rho
-    is_hm = jnp.asarray([_is_hminus(n) for n in species_names])[:, None]  # (nspecies, 1) bool
+    is_hm = jnp.asarray([n.strip() == "H-" for n in species_names])[:, None]  # (nspecies, 1) bool
 
     norm_cia = (number_density ** 2 / density)[None, :]   # (1, nlay)
     norm_hm  = (number_density / density)[None, :]        # (1, nlay)

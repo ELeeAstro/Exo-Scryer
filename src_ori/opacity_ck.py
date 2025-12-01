@@ -276,14 +276,10 @@ def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
     species_names = XS.ck_species_names()
     layer_vmr = state["vmr_lay"]
 
+    # Direct lookup - species names must match VMR keys exactly
     mixing_arrays = []
     for name in species_names:
-        # Try direct lookup first (if vmr dict), then fall back to f_ prefix
-        if name in layer_vmr:
-            arr = jnp.asarray(layer_vmr[name])
-        else:
-            arr = jnp.asarray(layer_vmr[f"f_{name}"])
-
+        arr = jnp.asarray(layer_vmr[name])
         if arr.ndim == 0:
             arr = jnp.full((layer_pressures.shape[0],), arr)
         mixing_arrays.append(arr)

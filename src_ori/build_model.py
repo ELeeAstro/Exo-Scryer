@@ -24,7 +24,7 @@ from opacity_line import zero_line_opacity, compute_line_opacity
 from opacity_ck import zero_ck_opacity, compute_ck_opacity
 from opacity_ray import zero_ray_opacity, compute_ray_opacity
 from opacity_cia import zero_cia_opacity, compute_cia_opacity
-from opacity_cloud import zero_cloud_opacity, compute_grey_cloud_opacity, compute_f18_cloud_opacity
+from opacity_cloud import zero_cloud_opacity, grey_cloud, F18_cloud
 
 import build_opacities as XS
 
@@ -150,9 +150,9 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
         print(f"[info] Cloud opacity is None:", cld_opac_scheme)
         cld_opac_kernel = zero_cloud_opacity
     elif cld_opac_scheme == "grey":
-        cld_opac_kernel = compute_grey_cloud_opacity
+        cld_opac_kernel = grey_cloud
     elif cld_opac_scheme == "F18":
-        cld_opac_kernel = compute_f18_cloud_opacity
+        cld_opac_kernel = F18_cloud
     else:
         raise NotImplementedError(f"Unknown cld_opac_scheme='{cld_opac_scheme}'")
 
@@ -166,7 +166,6 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     wl_hi_array = np.asarray(XS.master_wavelength_cut(), dtype=float)
     wl_hi = jnp.asarray(wl_hi_array)
 
-    @jax.jit
     def forward_model(params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
 
         # Merge fixed (delta) parameters with varying parameters

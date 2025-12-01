@@ -64,6 +64,8 @@ def run_nested_blackjax(cfg, prep: Prepared, exp_dir: Path) -> Tuple[Dict[str, n
         num_delete=num_delete,
         num_inner_steps=num_inner_steps,
     )
+
+    print(f"[blackjax_ns] Initializing nested sampler with {num_live} live points...")
     init_fn = jax.jit(nested_sampler.init)
     step_fn = jax.jit(nested_sampler.step)
 
