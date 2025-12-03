@@ -10,26 +10,33 @@ Sections to complete:
     - Key Functions
     - Notes
 """
-from typing import Dict
+from typing import Dict, Tuple
 import jax.numpy as jnp
 from aux_funtions import pchip_1d
 
 
 
-def zero_cloud_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
+def zero_cloud_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    del params
     layer_count = int(state["nlay"])
     wavelength_count = int(state["nwl"])
-    return jnp.zeros((layer_count, wavelength_count))
+    k_cld = jnp.zeros((layer_count, wavelength_count))
+    ssa = jnp.zeros_like(k_cld)
+    g = jnp.zeros_like(k_cld)
+    return k_cld, ssa, g
 
 
-def grey_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
+def grey_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     layer_count = int(state["nlay"])
     wavelength_count = int(state["nwl"])
     opacity_value = 10.0**jnp.asarray(params["log_10_k_cld_grey"])
-    return jnp.full((layer_count, wavelength_count), opacity_value)
+    k_cld = jnp.full((layer_count, wavelength_count), opacity_value)
+    ssa = jnp.zeros_like(k_cld)
+    g = jnp.zeros_like(k_cld)
+    return k_cld, ssa, g
 
 
-def F18_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
+def F18_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     wl = state["wl"]
     layer_count = int(state["nlay"])
     wavelength_count = int(state["nwl"])
@@ -46,14 +53,17 @@ def F18_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]):
     k_cld = (3.0 * q_c * Qext)/(4.0 * (r*1e-4))
 
 
-    return jnp.broadcast_to(k_cld, (layer_count, wavelength_count))
+    k_map = jnp.broadcast_to(k_cld, (layer_count, wavelength_count))
+    ssa = jnp.zeros_like(k_map)
+    g = jnp.zeros_like(k_map)
+    return k_map, ssa, g
 
 
 
 def compute_nk_cloud_opacity(
     state: Dict[str, jnp.ndarray],
     params: Dict[str, jnp.ndarray],
-) -> jnp.ndarray:
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Compute cloud extinction opacity k_cld(lambda, p) from retrieved
     n(λ), k(λ), particle radius r, and a simple power-law q_c(p).
@@ -163,4 +173,6 @@ def compute_nk_cloud_opacity(
     # k_cld = 3 * q_c / (4π ρ_d r) * Q_ext
     k_cld = (3.0 * q_c[:, None] * Q_ext[None, :]) / (4.0 * jnp.pi * rho_d * r)
 
-    return k_cld
+    ssa = jnp.zeros_like(k_cld)
+    g = jnp.zeros_like(k_cld)
+    return k_cld, ssa, g

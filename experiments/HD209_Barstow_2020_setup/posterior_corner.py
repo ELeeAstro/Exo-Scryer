@@ -177,6 +177,37 @@ def _load_corner_config(path: Path | None) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _update_histogram_quantile_styles(
+    fig: plt.Figure,
+    quantiles: Sequence[float],
+) -> None:
+    """
+    Update the linestyles of quantile markers in diagonal histograms.
+    Dashed for median, dotted for credible intervals.
+    """
+    n_params = int(np.sqrt(len(fig.axes)))
+    try:
+        axes = np.array(fig.axes).reshape(n_params, n_params)
+    except ValueError:
+        return
+
+    for idx in range(n_params):
+        ax = axes[idx, idx]
+        # Find vertical lines (quantile markers) in the histogram
+        for line in ax.get_lines():
+            x_data = line.get_xdata()
+            if len(x_data) == 2 and x_data[0] == x_data[1]:  # Vertical line
+                x_val = x_data[0]
+                # Check which quantile this line represents
+                for q in quantiles:
+                    # The line might be slightly off due to binning, but should be close
+                    # We'll change style based on whether it's near the median
+                    if np.isclose(q, 0.5, atol=0.01):
+                        line.set_linestyle("--")
+                    else:
+                        line.set_linestyle(":")
+
+
 def _replace_diag_with_kde(
     fig: plt.Figure,
     samples: np.ndarray,
@@ -208,7 +239,16 @@ def _replace_diag_with_kde(
         )
         for q in quantiles:
             val = np.quantile(samples[:, idx], q)
-            ax.axvline(val, color=color, linestyle="--", linewidth=1.0, alpha=0.9)
+            # Use dashed line for median (0.5), dotted for credible intervals
+            linestyle = "--" if np.isclose(q, 0.5) else ":"
+            ax.axvline(val, color=color, linestyle=linestyle, linewidth=1.0, alpha=0.9)
+
+        # Compute and add title with median and credible intervals
+        if len(quantiles) >= 3:
+            q_low, q_mid, q_high = np.quantile(samples[:, idx], [quantiles[0], quantiles[1], quantiles[2]])
+            title = f"${q_mid:.3f}^{{+{q_high - q_mid:.3f}}}_{{-{q_mid - q_low:.3f}}}$"
+            ax.set_title(title, fontsize=12)
+
         ax.set_yticks([])
         ax.set_ylabel("")
         ax.set_xlabel(xlabel)
@@ -320,8 +360,11 @@ def plot_corner(
     if fig is None:
         raise RuntimeError("corner.corner returned None; no plot generated.")
 
+    # Update quantile line styles (dashed for median, dotted for bounds)
     if kde_diag:
         _replace_diag_with_kde(fig, samples, quantiles, contour_color)
+    else:
+        _update_histogram_quantile_styles(fig, quantiles)
 
     # Tighten layout a bit
     fig.subplots_adjust(

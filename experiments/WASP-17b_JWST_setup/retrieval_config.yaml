@@ -7,7 +7,7 @@ physics:
   nlay: 99
 
   vert_Tp: isothermal
-  vert_alt: variable_g
+  vert_alt: p_ref
   vert_chem: constant_vmr
   vert_mu: dynamic
 
@@ -52,22 +52,25 @@ opac:
 params:
 
 
-  - { name: R_s,  dist: normal, mu: 1.57, sigma: 0.01, init: 1.57}
+  - { name: R_s, dist: delta,   value: 1.583,  transform: identity, init: 1.583 }
   - { name: p_bot, dist: delta,   value: 100.0,  transform: identity, init: 100.0 }
-  - { name: p_top, dist: delta,   value: 1e-5, transform: identity, init: 1e-5}
-  #- { name: rho_d, dist: delta,   value: 1.0, transform: identity, init: 1.}
+  - { name: p_top, dist: delta,   value: 1e-8, transform: identity, init: 1e-8}
+  - { name: M_p, dist: delta,   value: 0.477, transform: identity, init: 0.477}
 
-  - { name: log_g,  dist: normal, mu: 3.0, sigma: 0.3, init: 3.0}
-  - { name: R_p, dist: uniform, low: 1.6,   high: 2.1,  transform: logit, init: 1.4}
+  #- { name: rho_d, dist: delta,   value: 1.0, transform: identity, init: 1.}
+  #- { name: log_g,  dist: normal, mu: 3.0, sigma: 0.3, init: 3.0}
+
+  - { name: log_10_p_ref, dist: uniform, low: -7,   high: 1.9,  transform: logit, init: 10.0}
+  - { name: R_p, dist: uniform, low: 1.5895,   high: 2.1505,  transform: logit, init: 1.4}
   - { name: T_iso, dist: uniform, low: 400.0,   high: 2300.0, transform: logit, init: 1500.0 }
 
-  - { name: log_10_f_H2O, dist: uniform, low: -14,   high: -2,  transform: logit, init: -6}
-  - { name: log_10_f_CO2, dist: uniform, low: -14,   high: -2,  transform: logit, init: -6}
-  - { name: log_10_f_CO, dist: uniform, low: -14,   high: -2,  transform: logit, init: -6}
-  - { name: log_10_f_CH4, dist: uniform, low: -14,   high: -2,  transform: logit, init: -6}
-  - { name: log_10_f_Na, dist: uniform, low: -14,   high: -2,  transform: logit, init: -6}
-  - { name: log_10_f_K, dist: uniform, low: -14,   high: -2,  transform: logit, init: -6}
-  - { name: log_10_f_H-, dist: uniform, low: -15,   high: -1,  transform: logit, init: -6}
+  - { name: log_10_f_H2O, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
+  - { name: log_10_f_CO2, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
+  - { name: log_10_f_CO, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
+  - { name: log_10_f_CH4, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
+  - { name: log_10_f_Na, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
+  - { name: log_10_f_K, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
+  - { name: log_10_f_H-, dist: uniform, low: -12,   high: -0.3,  transform: logit, init: -6}
 
 
 sampling:
@@ -114,13 +117,13 @@ sampling:
     seed: 42                          # RNG seed for JAX
 
   blackjax_ns:
-    num_live_points: 150
+    num_live_points: 200
     num_inner_steps: 50
-    num_delete: 75
+    num_delete: 100
     dlogz_stop: 0
     seed: 42
 
 runtime:
-  platform: cpu           # cpu | gpu | cuda | metal
+  platform: gpu           # cpu | gpu | cuda | metal
   cuda_visible_devices: 1  # or "0,1"
   threads: 1

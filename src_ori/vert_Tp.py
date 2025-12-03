@@ -51,22 +51,26 @@ def hopf_function(tau: jnp.ndarray) -> jnp.ndarray:
     out = jnp.where(tau_safe > 5.0, high, out)
     return out
 
-def isothermal(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
-    nlay = jnp.size(p_lay)
+def isothermal(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]):
+    nlev = jnp.size(p_lev)
     T_iso = jnp.asarray(params["T_iso"])
-    return jnp.full((nlay,), T_iso)
+    T_lev = jnp.full((nlev,), T_iso)
+    T_lay = jnp.full((nlev-1,), T_iso)
+    return T_lev, T_lay
 
 
-def Milne(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
+def Milne(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     log_g = jnp.asarray(params["log_g"])
     T_int = jnp.asarray(params["T_int"])
     k_ir = jnp.asarray(params["k_ir"])
     g = 10.0 ** log_g
-    tau_ir = k_ir / g * p_lay
-    return (0.75 * T_int**4 * (hopf_function(tau_ir) + tau_ir)) ** 0.25
+    tau_ir = k_ir / g * p_lev
+    T_lev = (0.75 * T_int**4 * (hopf_function(tau_ir) + tau_ir)) ** 0.25
+    T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
+    return T_lev, T_lay
 
 
-def Guillot(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
+def Guillot(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     T_int = jnp.asarray(params["T_int"])
     T_eq = jnp.asarray(params["T_eq"])
     k_ir = jnp.asarray(params["k_ir"])
@@ -75,7 +79,7 @@ def Guillot(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     f = jnp.asarray(params["f_hem"])
     T_irr = T_eq * jnp.sqrt(2.0)
     g = 10.0 ** log_g
-    tau_ir = k_ir / g * p_lay
+    tau_ir = k_ir / g * p_lev
     sqrt3 = jnp.sqrt(3.0)
     milne = 0.75 * T_int**4 * (2.0 / 3.0 + tau_ir)
     guillot = 0.75 * T_irr**4 * f * (
@@ -83,10 +87,12 @@ def Guillot(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
         + 1.0 / (gam * sqrt3)
         + (gam / sqrt3 - 1.0 / (gam * sqrt3)) * jnp.exp(-gam * tau_ir * sqrt3)
     )
-    return (milne + guillot) ** 0.25
+    T_lev = (milne + guillot) ** 0.25
+    T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
+    return T_lev, T_lay
 
 
-def Line(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
+def Line(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     T_int = jnp.asarray(params["T_int"])
     k_ir = jnp.asarray(params["k_ir"])
     gam_1 = jnp.asarray(params["gam_1"])
@@ -97,7 +103,7 @@ def Line(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     log_g = jnp.asarray(params["log_g"])
     T_irr = beta * T_eq
     g = 10.0 ** log_g
-    tau_ir = k_ir / g * p_lay
+    tau_ir = k_ir / g * p_lev
     eps1 = (
         2.0 / 3.0
         + 2.0 / (3.0 * gam_1) * (1.0 + (gam_1 * tau_ir / 2.0 - 1.0) * jnp.exp(-tau_ir * gam_1))
@@ -110,15 +116,19 @@ def Line(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     )
     milne = 0.75 * T_int**4 * (2.0 / 3.0 + tau_ir)
     line = 0.75 * T_irr**4 * ((1.0 - alpha) * eps1 + alpha * eps2)
-    return (milne + line) ** 0.25
+    T_lev = (milne + line) ** 0.25
+    T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
+    return T_lev, T_lay
 
 
-def Barstow(p_lay: jnp.ndarray, params: Dict[str, jnp.ndarray]):
+def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]):
     T_iso = jnp.asarray(params["T_iso"])
     kappa = 2.0 / 7.0
     p1 = 0.1 * bar
     p2 = 1.0 * bar
-    p_for_adiabat = jnp.maximum(p_lay, p1)
+    p_for_adiabat = jnp.maximum(p_lev, p1)
     T_adiabat = T_iso * (p_for_adiabat / p1) ** kappa
     T_deep = T_iso * (p2 / p1) ** kappa
-    return jnp.where(p_lay <= p1, T_iso, jnp.where(p_lay <= p2, T_adiabat, T_deep))
+    T_lev = jnp.where(p_lev <= p1, T_iso, jnp.where(p_lev <= p2, T_adiabat, T_deep))
+    T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
+    return T_lev, T_lay

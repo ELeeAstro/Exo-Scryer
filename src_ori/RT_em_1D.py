@@ -3,7 +3,10 @@ RT_em_1D.py
 ===========
 
 Overview:
-    Scaffolding for a 1D emission-spectrum radiative-transfer solver.
+    Longwave emission solver using the extended absorption approximation
+    (alpha-nEAA) following Li (2002). The implementation mirrors the
+    lw_AA_L_mod Fortran module but works on the native wavelength grid
+    with wavelength-dependent Planck sources.
 
 Sections to complete:
     - Usage
@@ -13,83 +16,284 @@ Sections to complete:
 
 from __future__ import annotations
 
-from typing import Dict, Mapping, Callable
+from typing import Dict, Mapping, Tuple
 
+import jax
 import jax.numpy as jnp
+from jax import lax
+
+import build_opacities as XS
+
+from data_constants import kb, h, c_light
 
 
-def _sum_opacity_components(
+_MU_NODES = (0.0454586727, 0.2322334416, 0.5740198775, 0.9030775973)
+_MU_WEIGHTS = (0.0092068785, 0.1285704278, 0.4323381850, 0.4298845087)
+nstreams = len(_MU_NODES) * 2
+_DT_THRESHOLD = 1.0e-4
+_DT_SAFE = 1.0e-12
+
+
+def _get_ck_weights(state: Dict[str, jnp.ndarray]) -> jnp.ndarray:
+    g_weights = state.get("g_weights")
+    if g_weights is not None:
+        return jnp.asarray(g_weights)
+    if not XS.has_ck_data():
+        raise RuntimeError("c-k g-weights not built; run build_opacities() with ck tables.")
+    g_weights = XS.ck_g_weights()
+    if g_weights.ndim > 1:
+        g_weights = g_weights[0]
+    return jnp.asarray(g_weights)
+
+
+def _sum_opacity_components_ck(
     state: Dict[str, jnp.ndarray],
     opacity_components: Mapping[str, jnp.ndarray],
 ) -> jnp.ndarray:
-    """Return the summed opacity grid for all provided components."""
+    nlay = int(state["nlay"])
+    nwl = int(state["nwl"])
+
+    if not opacity_components:
+        g_weights = _get_ck_weights(state)
+        ng = g_weights.shape[-1]
+        return jnp.zeros((nlay, nwl, ng))
+
+    line_opacity = opacity_components.get("line")
+
+    if line_opacity is not None:
+        k_tot = line_opacity
+    else:
+        g_weights = _get_ck_weights(state)
+        ng = g_weights.shape[-1]
+        k_tot = jnp.zeros((nlay, nwl, ng))
+
+    for name, component in opacity_components.items():
+        if name != "line":
+            k_tot = k_tot + component[:, :, None]
+
+    return k_tot
+
+
+def _sum_opacity_components_lbl(
+    state: Dict[str, jnp.ndarray],
+    opacity_components: Mapping[str, jnp.ndarray],
+) -> jnp.ndarray:
     if opacity_components:
         first = next(iter(opacity_components.values()))
         k_tot = jnp.zeros_like(first)
         for component in opacity_components.values():
             k_tot = k_tot + component
-        return k_tot
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
-    return jnp.zeros((nlay, nwl))
-
-
-def two_stream_emission(
-    state: Dict[str, jnp.ndarray],
-    k_tot: jnp.ndarray,
-    source_fn: Callable[[Dict[str, jnp.ndarray], jnp.ndarray], jnp.ndarray] | None = None,
-) -> jnp.ndarray:
-    """
-    Placeholder two-stream emission calculation.
-
-    Parameters
-    ----------
-    state : Dict[str, jnp.ndarray]
-        Atmospheric state dictionary (contains T_lay, p_lay, etc.).
-    k_tot : jnp.ndarray
-        Total opacity grid (nlay, nlambda).
-    source_fn : Callable, optional
-        Function returning a source term per layer and wavelength.
-    """
-    k_floor = 1.0e-99
-    k_eff = jnp.maximum(k_tot, k_floor)
-    dz = jnp.asarray(state["dz"])[:, None]
-    tau = jnp.cumsum(k_eff * dz, axis=0)
-
-    if source_fn is None:
-        # Default source: Planck-like placeholder using T_lay
-        T_lay = jnp.asarray(state["T_lay"])[:, None]
-        source = jnp.power(T_lay, 4)
     else:
-        source = source_fn(state, k_tot)
+        nlay = int(state["nlay"])
+        nwl = int(state["nwl"])
+        k_tot = jnp.zeros((nlay, nwl))
 
-    intensity = jnp.trapz(source * jnp.exp(-tau), axis=0)
-    return intensity
+    return k_tot
+
+
+def _planck_lambda(wavelength_cm: jnp.ndarray, temperature: jnp.ndarray) -> jnp.ndarray:
+    wl = jnp.asarray(wavelength_cm)
+    T = jnp.asarray(temperature)
+    exponent = (h * c_light) / (wl * kb * jnp.maximum(T, 1.0))
+    expm1 = jnp.expm1(jnp.clip(exponent, a_min=None, a_max=80.0))
+    prefactor = 2.0 * h * c_light**2 / (wl**5)
+    return prefactor / jnp.maximum(expm1, 1e-300)
+
+
+def _layer_optical_depth_lbl(k_tot: jnp.ndarray, rho: jnp.ndarray, dz: jnp.ndarray) -> jnp.ndarray:
+    return k_tot * rho[:, None] * dz[:, None]
+
+
+def _layer_optical_depth_ck(k_tot: jnp.ndarray, rho: jnp.ndarray, dz: jnp.ndarray) -> jnp.ndarray:
+    return k_tot * rho[:, None, None] * dz[:, None, None]
+
+
+def _solve_alpha_eaa(
+    be_levels: jnp.ndarray,
+    dtau_layers: jnp.ndarray,
+    ssa: jnp.ndarray,
+    g_phase: jnp.ndarray,
+    be_internal: jnp.ndarray,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    nlev, nwl = be_levels.shape
+    nlay = nlev - 1
+    be_levels = jnp.asarray(be_levels, dtype=jnp.float64)[::-1]
+    dtau_layers = jnp.asarray(dtau_layers, dtype=jnp.float64)[::-1]
+    ssa = jnp.asarray(ssa, dtype=jnp.float64)[::-1]
+    g_phase = jnp.asarray(g_phase, dtype=jnp.float64)[::-1]
+    al = be_levels[1:] - be_levels[:-1]
+    lw_up_sum = jnp.zeros((nlev, nwl))
+    lw_down_sum = jnp.zeros((nlev, nwl))
+    be_internal = jnp.asarray(be_internal)
+
+    mask = g_phase >= 1.0e-6
+    fc = jnp.where(mask, g_phase**nstreams, 0.0)
+    pmom2 = jnp.where(mask, g_phase**(nstreams + 1), 0.0)
+    ratio = jnp.maximum((fc**2) / jnp.maximum(pmom2**2, 1.0e-30), 1.0e-30)
+    sigma_sq = jnp.where(
+        mask,
+        ((nstreams + 1) ** 2 - nstreams**2) / jnp.log(ratio),
+        1.0,
+    )
+    c = jnp.exp((nstreams**2) / (2.0 * sigma_sq))
+    fc_scaled = c * fc
+    w_in = jnp.clip(ssa, 0.0, 0.95)
+    denom = jnp.maximum(1.0 - fc_scaled * w_in, 1.0e-12)
+    w0 = jnp.where(mask, w_in * ((1.0 - fc_scaled) / denom), w_in)
+    dtau = jnp.where(mask, (1.0 - w_in * fc_scaled) * dtau_layers, dtau_layers)
+    hg = g_phase
+    eps = jnp.sqrt((1.0 - w0) * (1.0 - hg * w0))
+    dtau_a = eps * dtau
+
+    for mu, weight in zip(_MU_NODES, _MU_WEIGHTS):
+        T_trans = jnp.exp(-dtau_a / mu)
+
+        def down_body(k, lw):
+            dtau_k = dtau_a[k]
+            mu_over_dtau = mu / jnp.maximum(dtau_k, _DT_SAFE)
+            linear = (
+                lw[k] * T_trans[k]
+                + be_levels[k + 1]
+                - al[k] * mu_over_dtau
+                - (be_levels[k] - al[k] * mu_over_dtau) * T_trans[k]
+            )
+            iso = (
+                lw[k] * T_trans[k]
+                + 0.5 * (be_levels[k] + be_levels[k + 1]) * (1.0 - T_trans[k])
+            )
+            mask_dt = dtau_k > _DT_THRESHOLD
+            next_val = jnp.where(mask_dt, linear, iso)
+            return lw.at[k + 1].set(next_val)
+
+        lw_init = jnp.zeros((nlev, nwl), dtype=be_levels.dtype)
+        lw_down = lax.fori_loop(0, nlay, down_body, lw_init)
+
+        def up_body(idx, lw):
+            k = nlay - 1 - idx
+            dtau_k = dtau_a[k]
+            mu_over_dtau = mu / jnp.maximum(dtau_k, _DT_SAFE)
+            linear = (
+                lw[k + 1] * T_trans[k]
+                + be_levels[k]
+                + al[k] * mu_over_dtau
+                - (be_levels[k + 1] + al[k] * mu_over_dtau) * T_trans[k]
+            )
+            iso = (
+                lw[k + 1] * T_trans[k]
+                + 0.5 * (be_levels[k] + be_levels[k + 1]) * (1.0 - T_trans[k])
+            )
+            mask_dt = dtau_k > _DT_THRESHOLD
+            next_val = jnp.where(mask_dt, linear, iso)
+            return lw.at[k].set(next_val)
+
+        lw_up_init = jnp.zeros((nlev, nwl), dtype=be_levels.dtype).at[-1].set(
+            lw_down[-1] + be_internal
+        )
+        lw_up = lax.fori_loop(0, nlay, up_body, lw_up_init)
+
+        lw_down_sum = lw_down_sum + lw_down * weight
+        lw_up_sum = lw_up_sum + lw_up * weight
+
+    lw_up_flux = jnp.pi * lw_up_sum
+    lw_down_flux = jnp.pi * lw_down_sum
+    return lw_up_flux, lw_down_flux
 
 
 def compute_emission_spectrum_1d(
     state: Dict[str, jnp.ndarray],
     params: Dict[str, jnp.ndarray],
     opacity_components: Mapping[str, jnp.ndarray],
-    solver: Callable[[Dict[str, jnp.ndarray], jnp.ndarray], jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
-    """
-    Compute the wavelength-dependent emission spectrum.
+    ck_mode = bool(state.get("ck", False))
+    wl_cm = jnp.asarray(state["wl"], dtype=jnp.float64) * 1.0e-4
+    T_lev = jnp.asarray(state["T_lev"], dtype=jnp.float64)
+    rho_lay = jnp.asarray(state["rho_lay"], dtype=jnp.float64)
+    dz = jnp.asarray(state["dz"], dtype=jnp.float64)
+    be_levels = _planck_lambda(wl_cm[None, :], T_lev[:, None])
+    if "T_int" in params:
+        T_int = jnp.asarray(params["T_int"], dtype=jnp.float64)
+        be_internal = _planck_lambda(wl_cm[None, :], T_int[None, None])[0]
+    else:
+        be_internal = jnp.zeros_like(be_levels[-1])
 
-    Parameters
-    ----------
-    state : Dict[str, jnp.ndarray]
-        Atmospheric state dictionary.
-    params : Dict[str, jnp.ndarray]
-        Retrieval parameters (unused placeholder for now).
-    opacity_components : Mapping[str, jnp.ndarray]
-        Mapping of opacity component names to arrays shaped (nlay, nlambda).
-    solver : Callable, optional
-        Function handling the RT solution; defaults to `two_stream_emission`.
-    """
-    k_tot = _sum_opacity_components(state, opacity_components)
+    if ck_mode:
+        k_tot = _sum_opacity_components_ck(state, opacity_components)
+        ssa_ck, g_ck = _compute_scattering_properties(
+            opacity_components,
+            state,
+            k_tot,
+            ck_mode=True,
+        )
+        dtau_ck = _layer_optical_depth_ck(k_tot, rho_lay, dz)
+        g_weights = _get_ck_weights(state)
+        dtau_by_g = jnp.moveaxis(dtau_ck, -1, 0)
+        ssa_by_g = jnp.moveaxis(ssa_ck, -1, 0)
+        g_by_g = jnp.moveaxis(g_ck, -1, 0)
 
-    if solver is None:
-        solver = two_stream_emission
+        def _solve_one(dtau_slice, ssa_slice, g_slice):
+            return _solve_alpha_eaa(be_levels, dtau_slice, ssa_slice, g_slice, be_internal)
 
-    return solver(state, k_tot)
+        flux_up_g, _ = jax.vmap(_solve_one)(dtau_by_g, ssa_by_g, g_by_g)
+        lw_up = jnp.sum(g_weights[:, None, None] * flux_up_g, axis=0)
+    else:
+        k_tot = _sum_opacity_components_lbl(state, opacity_components)
+        ssa_lbl, g_lbl = _compute_scattering_properties(
+            opacity_components,
+            state,
+            k_tot,
+            ck_mode=False,
+        )
+        dtau_lbl = _layer_optical_depth_lbl(k_tot, rho_lay, dz)
+        lw_up, _ = _solve_alpha_eaa(be_levels, dtau_lbl, ssa_lbl, g_lbl, be_internal)
+
+    top_flux = lw_up[0]
+    flux_ratio = _scale_flux_ratio(top_flux, state, params)
+    return flux_ratio
+
+
+def _compute_scattering_properties(
+    opacity_components: Mapping[str, jnp.ndarray],
+    state: Dict[str, jnp.ndarray],
+    k_tot: jnp.ndarray,
+    ck_mode: bool,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    nlay = int(state["nlay"])
+    nwl = int(state["nwl"])
+
+    def _get_component(name, shape):
+        arr = opacity_components.get(name)
+        if arr is None:
+            return jnp.zeros(shape)
+        return jnp.asarray(arr)
+
+    base_shape = (nlay, nwl)
+    k_ray = _get_component("rayleigh", base_shape)
+    k_cloud_ext = _get_component("cloud", base_shape)
+    cloud_ssa = _get_component("cloud_ssa", base_shape)
+    cloud_g = _get_component("cloud_g", base_shape)
+
+    k_cloud_scat = cloud_ssa * k_cloud_ext
+    k_tot_scat = k_ray + k_cloud_scat
+    k_tot_safe = jnp.maximum(k_tot, 1.0e-30)
+
+    if ck_mode:
+        k_tot_scat = k_tot_scat[:, :, None]
+        cloud_g = cloud_g[:, :, None]
+
+    ssa = jnp.clip(k_tot_scat / k_tot_safe, a_min=0.0, a_max=0.95)
+    g = cloud_g
+    return ssa, g
+
+
+def _scale_flux_ratio(
+    flux: jnp.ndarray,
+    state: Dict[str, jnp.ndarray],
+    params: Dict[str, jnp.ndarray],
+) -> jnp.ndarray:
+    if "F_star" not in params:
+        raise ValueError("compute_emission_spectrum_1d requires parameter 'F_star'.")
+    R0 = jnp.asarray(state["R0"], dtype=jnp.float64)
+    R_s = jnp.asarray(state["R_s"], dtype=jnp.float64)
+    F_star = jnp.asarray(params["F_star"], dtype=jnp.float64)
+    scale = (R0**2) / (jnp.maximum(F_star, 1.0e-30) * (R_s**2))
+    return flux * scale

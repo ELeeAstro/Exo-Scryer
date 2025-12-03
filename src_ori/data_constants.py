@@ -11,13 +11,26 @@ Sections to complete:
     - Notes
 """
 
+R = 8.31446261815324e7
 kb = 1.380649e-16
 amu = 1.66053906892e-24
+G = 6.67430e-8
+h = 6.62607015e-27
+c_light = 2.99792458e10
+
 R_jup = 7.1492e9
 R_sun  = 6.957e10
+R_earth = 6.3781e8
+
+M_sun = 1.988416e33
+M_jup = 1.89813e30
+M_earth = 5.9722e27
+
 
 bar = 1.0e6
 pa = 1.0e5
+
+
 
 # Species data adapted from the BeAR code (Kitzmann 2024) for quick global access.
 CHEM_SPECIES_DATA = [

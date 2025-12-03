@@ -13,9 +13,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from data_constants import kb, amu, R_jup, R_sun, bar
+from data_constants import kb, amu, R_jup, R_sun, bar, G, M_jup
 
-from vert_alt import hypsometric, hypsometric_variable_g
+from vert_alt import hypsometric, hypsometric_variable_g, hypsometric_variable_g_pref
 from vert_Tp import isothermal, Milne, Guillot, Line, Barstow
 from vert_chem import constant_vmr, chemical_equilibrium
 from vert_mu import constant_mu, compute_mu
@@ -29,6 +29,7 @@ from opacity_cloud import zero_cloud_opacity, grey_cloud, F18_cloud
 import build_opacities as XS
 
 from RT_trans_1D import compute_transit_depth_1d
+from RT_em_1D import compute_emission_spectrum_1d
 
 from instru_convolve import apply_response_functions
 
@@ -53,12 +54,12 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     # Get the kernel for forward model
     phys = cfg.physics
 
-    vert_tp_name = getattr(phys, "vert_Tp", None)
-    if vert_tp_name in (None, "None"):
-        vert_tp_name = getattr(phys, "vert_struct", None)
-    if vert_tp_name in (None, "None"):
-        vert_tp_name = "isothermal"
-    vert_tp_name = str(vert_tp_name).lower()
+    vert_tp_raw = getattr(phys, "vert_Tp", None)
+    if vert_tp_raw in (None, "None"):
+        vert_tp_raw = getattr(phys, "vert_struct", None)
+    if vert_tp_raw in (None, "None"):
+        raise ValueError("physics.vert_Tp (or vert_struct) must be specified explicitly.")
+    vert_tp_name = str(vert_tp_raw).lower()
     if vert_tp_name in ("isothermal", "constant"):
         Tp_kernel = isothermal
     elif vert_tp_name == "milne":
@@ -72,21 +73,23 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     else:
         raise NotImplementedError(f"Unknown vert_Tp='{vert_tp_name}'")
 
-    vert_alt_name = getattr(phys, "vert_alt", None)
-    if vert_alt_name in (None, "None"):
-        vert_alt_name = "variable_g"
-    vert_alt_name = str(vert_alt_name).lower()
+    vert_alt_raw = getattr(phys, "vert_alt", None)
+    if vert_alt_raw in (None, "None"):
+        raise ValueError("physics.vert_alt must be specified explicitly.")
+    vert_alt_name = str(vert_alt_raw).lower()
     if vert_alt_name in ("constant", "constant_g", "fixed"):
         altitude_kernel = hypsometric
     elif vert_alt_name in ("variable", "variable_g"):
         altitude_kernel = hypsometric_variable_g
+    elif vert_alt_name in ("p_ref"):
+        altitude_kernel = hypsometric_variable_g_pref    
     else:
         raise NotImplementedError(f"Unknown altitude scheme='{vert_alt_name}'")
 
-    vert_chem_name = getattr(phys, "vert_chem", None)
-    if vert_chem_name in (None, "None"):
-        vert_chem_name = "constant_vmr"
-    vert_chem_name = str(vert_chem_name).lower()
+    vert_chem_raw = getattr(phys, "vert_chem", None)
+    if vert_chem_raw in (None, "None"):
+        raise ValueError("physics.vert_chem must be specified explicitly.")
+    vert_chem_name = str(vert_chem_raw).lower()
     if vert_chem_name in ("constant", "constant_vmr"):
         chemistry_kernel = constant_vmr
     elif vert_chem_name in ("ce", "chemical_equilibrium"):
@@ -94,10 +97,10 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
     else:
         raise NotImplementedError(f"Unknown chemistry scheme='{vert_chem_name}'")
 
-    vert_mu_name = getattr(phys, "vert_mu", None)
-    if vert_mu_name in (None, "None"):
-        vert_mu_name = "auto"
-    vert_mu_name = str(vert_mu_name).lower()
+    vert_mu_raw = getattr(phys, "vert_mu", None)
+    if vert_mu_raw in (None, "None"):
+        raise ValueError("physics.vert_mu must be specified explicitly.")
+    vert_mu_name = str(vert_mu_raw).lower()
     if vert_mu_name == "auto":
         def mu_kernel(params, vmr_lay, nlay):
             if "mu" in params:
@@ -115,50 +118,67 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
         raise NotImplementedError(f"Unknown mean-molecular-weight scheme='{vert_mu_name}'")
 
     ck = False
-    line_opac_scheme = getattr(phys, "opac_line", "None")
-    if line_opac_scheme == "None":
+    line_opac_scheme = getattr(phys, "opac_line", None)
+    if line_opac_scheme is None:
+        raise ValueError("physics.opac_line must be specified explicitly (use 'None' to disable).")
+    line_opac_scheme_str = str(line_opac_scheme)
+    if line_opac_scheme_str.lower() == "none":
         print(f"[info] Line opacity is None:", line_opac_scheme)
         line_opac_kernel = zero_line_opacity
-    elif line_opac_scheme == "lbl":
+    elif line_opac_scheme_str.lower() == "lbl":
         line_opac_kernel = compute_line_opacity
-    elif line_opac_scheme == "ck":
+    elif line_opac_scheme_str.lower() == "ck":
         ck = True
         line_opac_kernel = compute_ck_opacity
     else:
         raise NotImplementedError(f"Unknown line_opac_scheme='{line_opac_scheme}'")
 
-    ray_opac_scheme = getattr(phys, "opac_ray", "None")
-    if ray_opac_scheme == "None":
+    ray_opac_scheme = getattr(phys, "opac_ray", None)
+    if ray_opac_scheme is None:
+        raise ValueError("physics.opac_ray must be specified explicitly (use 'None' to disable).")
+    ray_opac_scheme_str = str(ray_opac_scheme)
+    if ray_opac_scheme_str.lower() == "none":
         print(f"[info] Rayleigh opacity is None:", ray_opac_scheme)
         ray_opac_kernel = zero_ray_opacity
-    elif ray_opac_scheme == "lbl" or ray_opac_scheme == "ck":
+    elif ray_opac_scheme_str.lower() in ("lbl", "ck"):
         ray_opac_kernel = compute_ray_opacity
     else:
         raise NotImplementedError(f"Unknown ray_opac_scheme='{ray_opac_scheme}'")
 
-    cia_opac_scheme = getattr(phys, "opac_cia", "None")
-    if cia_opac_scheme == "None":
+    cia_opac_scheme = getattr(phys, "opac_cia", None)
+    if cia_opac_scheme is None:
+        raise ValueError("physics.opac_cia must be specified explicitly (use 'None' to disable).")
+    cia_opac_scheme_str = str(cia_opac_scheme)
+    if cia_opac_scheme_str.lower() == "none":
         print(f"[info] CIA opacity is None:", cia_opac_scheme)
         cia_opac_kernel = zero_cia_opacity
-    elif cia_opac_scheme == "lbl" or cia_opac_scheme == "ck":
+    elif cia_opac_scheme_str.lower() in ("lbl", "ck"):
         cia_opac_kernel = compute_cia_opacity
     else:
         raise NotImplementedError(f"Unknown cia_opac_scheme='{cia_opac_scheme}'")
 
-    cld_opac_scheme = getattr(phys, "opac_cloud", "None")
-    if cld_opac_scheme == "None":
+    cld_opac_scheme = getattr(phys, "opac_cloud", None)
+    if cld_opac_scheme is None:
+        raise ValueError("physics.opac_cloud must be specified explicitly (use 'None' to disable).")
+    cld_opac_scheme_str = str(cld_opac_scheme)
+    if cld_opac_scheme_str.lower() == "none":
         print(f"[info] Cloud opacity is None:", cld_opac_scheme)
         cld_opac_kernel = zero_cloud_opacity
-    elif cld_opac_scheme == "grey":
+    elif cld_opac_scheme_str.lower() == "grey":
         cld_opac_kernel = grey_cloud
-    elif cld_opac_scheme == "F18":
+    elif cld_opac_scheme_str.lower() == "f18":
         cld_opac_kernel = F18_cloud
     else:
         raise NotImplementedError(f"Unknown cld_opac_scheme='{cld_opac_scheme}'")
 
-    rt_scheme = getattr(phys, "rt_scheme", "transit_1d")
+    rt_raw = getattr(phys, "rt_scheme", None)
+    if rt_raw in (None, "None"):
+        raise ValueError("physics.rt_scheme must be specified explicitly.")
+    rt_scheme = str(rt_raw).lower()
     if rt_scheme == "transit_1d":
         rt_kernel = compute_transit_depth_1d
+    elif rt_scheme == "emission_1d":
+        rt_kernel = compute_emission_spectrum_1d
     else:
         raise NotImplementedError(f"Unknown rt_scheme='{rt_scheme}'")
 
@@ -179,6 +199,11 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
 
         # Planet and star radii (R0 is radius at p_bot)
         R0 = jnp.asarray(full_params["R_p"]) * R_jup
+        if "M_p" in full_params:
+            Mp_val = jnp.asarray(full_params["M_p"]) * M_jup
+            g_val = (G * Mp_val) / (R0 ** 2)
+            log_g_val = jnp.log10(jnp.clip(g_val, a_min=1e-30))
+            full_params = {**full_params, "log_g": log_g_val}
         R_s = jnp.asarray(full_params["R_s"]) * R_sun
 
         # Atmospheric pressure grid
@@ -188,7 +213,7 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
 
         # Vertical atmospheric T-p layer structure
         p_lay = (p_lev[1:] - p_lev[:-1]) / jnp.log(p_lev[1:]/p_lev[:-1])
-        T_lay = Tp_kernel(p_lay, full_params)
+        T_lev, T_lay = Tp_kernel(p_lev, full_params)
 
         # Get the vertical chemical structure (VMRs at each layer)
         vmr_lay = chemistry_kernel(p_lay, T_lay, full_params, nlay)
@@ -212,18 +237,19 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
             g_weights = jnp.asarray(g_weights)
 
         state = {
-            'ck': ck,
+            "ck": ck,
             "nwl": nwl,
             "nlay": nlay,
             "wl": wl,
             "R0": R0,
             "R_s": R_s,
             "p_lev": p_lev,
-            "mu_lay": mu_lay,
-            "T_lay": T_lay,
+            "T_lev": T_lev,
             "z_lev": z_lev,
             "z_lay": z_lay,
             "dz": dz,
+            "mu_lay": mu_lay,
+            "T_lay": T_lay,
             "p_lay": p_lay,
             "rho_lay": rho_lay,
             "nd_lay": nd_lay,
@@ -236,13 +262,15 @@ def build_forward_model(cfg, obs, return_highres: bool = False):
         k_line = line_opac_kernel(state, full_params)
         k_ray = ray_opac_kernel(state, full_params)
         k_cia = cia_opac_kernel(state, full_params)
-        k_cld = cld_opac_kernel(state, full_params)
+        k_cld_ext, cld_ssa, cld_g = cld_opac_kernel(state, full_params)
 
         opacity_components = {
             "line": k_line,
             "rayleigh": k_ray,
             "cia": k_cia,
-            "cloud": k_cld,
+            "cloud": k_cld_ext,
+            "cloud_ssa": cld_ssa,
+            "cloud_g": cld_g,
         }
 
         # Radiative transfer
