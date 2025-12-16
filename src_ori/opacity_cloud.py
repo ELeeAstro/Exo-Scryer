@@ -19,21 +19,21 @@ from registry_cloud import get_or_create_kk_cache, compute_kk_grid_cache, KKGrid
 
 def zero_cloud_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     del params
-    layer_count = int(state["nlay"])
-    wavelength_count = int(state["nwl"])
-    k_cld = jnp.zeros((layer_count, wavelength_count))
-    ssa = jnp.zeros_like(k_cld)
-    g = jnp.zeros_like(k_cld)
+    # Use shape directly without int() conversion for JIT compatibility
+    shape = (state["nlay"], state["nwl"])
+    k_cld = jnp.zeros(shape)
+    ssa = jnp.zeros(shape)
+    g = jnp.zeros(shape)
     return k_cld, ssa, g
 
 
 def grey_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    layer_count = int(state["nlay"])
-    wavelength_count = int(state["nwl"])
-    opacity_value = 10.0**jnp.asarray(params["log_10_k_cld_grey"])
-    k_cld = jnp.full((layer_count, wavelength_count), opacity_value)
-    ssa = jnp.zeros_like(k_cld)
-    g = jnp.zeros_like(k_cld)
+    # Use shape directly without int() conversion for JIT compatibility
+    shape = (state["nlay"], state["nwl"])
+    opacity_value = 10.0**params["log_10_k_cld_grey"]
+    k_cld = jnp.full(shape, opacity_value)
+    ssa = jnp.zeros(shape)
+    g = jnp.zeros(shape)
     return k_cld, ssa, g
 
 
@@ -51,7 +51,7 @@ def powerlaw_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]
     log_10_k_cld_grey : float
         Log10 of constant grey opacity component (cm^2/g)
         This provides a wavelength-independent floor opacity
-    log_10_k_cld_powerlaw : float
+    log_10_k_cld_Ray : float
         Log10 of power-law amplitude at λ_ref (cm^2/g)
         This is the strength of the wavelength-dependent component
     alpha_cld : float
@@ -59,8 +59,8 @@ def powerlaw_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]
         - alpha = 0: both components are grey
         - alpha = 4: Rayleigh scattering slope (λ^-4)
         - alpha > 0: power-law component is stronger at shorter wavelengths
-    wl_ref_cld : float, optional
-        Reference wavelength in microns (default: 1.0 μm)
+    wl_ref_cld : float
+        Reference wavelength in microns
 
     Returns
     -------
@@ -84,27 +84,26 @@ def powerlaw_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]
         alpha_cld: 4.0
     """
     wl = state["wl"]
-    layer_count = state["nlay"]
-    wavelength_count = state["nwl"]
+    nlay = state["nlay"]
 
     # Constant grey opacity component
-    k_grey = 10.0**jnp.asarray(params["log_10_k_cld_grey"])
+    k_grey = 10.0**params["log_10_k_cld_grey"]
 
     # Power-law amplitude at reference wavelength
-    k_powerlaw = 10.0**jnp.asarray(params["log_10_k_cld_Ray"])
+    k_powerlaw = 10.0**params["log_10_k_cld_Ray"]
 
     # Power-law exponent (alpha=4 gives Rayleigh slope)
-    alpha = jnp.asarray(params["alpha_cld"])
+    alpha = params["alpha_cld"]
 
     # Reference wavelength (default 1.0 micron if not specified)
-    wl_ref = jnp.asarray(params.get("wl_ref_cld", 1.0))
+    wl_ref = params["wl_ref_cld"]
 
     # Two-component opacity: grey + power-law
     # k(λ) = k_grey + k_powerlaw * (λ/λ_ref)^(-alpha)
     k_wl = k_grey + k_powerlaw * (wl / wl_ref)**(-alpha)
 
-    # Broadcast to (nlay, nwl)
-    k_cld = jnp.broadcast_to(k_wl, (layer_count, wavelength_count))
+    # Broadcast to (nlay, nwl) using implicit broadcasting
+    k_cld = jnp.zeros((nlay, 1)) + k_wl[None, :]
 
     # Pure absorption (no scattering)
     ssa = jnp.zeros_like(k_cld)
@@ -115,22 +114,19 @@ def powerlaw_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]
 
 def F18_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     wl = state["wl"]
-    layer_count = int(state["nlay"])
-    wavelength_count = int(state["nwl"])
-    r = 10.0**jnp.asarray(params["log_10_cld_r"])
-    Q0 = jnp.asarray(params["cld_Q0"])
-    a = jnp.asarray(params["cld_a"])
-    q_c = 10.0**jnp.asarray(params["log_10_q_c"])
-
+    nlay = state["nlay"]
+    r = 10.0**params["log_10_cld_r"]
+    Q0 = params["cld_Q0"]
+    a = params["cld_a"]
+    q_c = 10.0**params["log_10_q_c"]
 
     x = (2.0 * jnp.pi * r) / wl
     Qext = 1.0 / (Q0 * x**-a + x**0.2)
 
+    k_cld = (3.0 * q_c * Qext) / (4.0 * (r * 1e-4))
 
-    k_cld = (3.0 * q_c * Qext)/(4.0 * (r*1e-4))
-
-
-    k_map = jnp.broadcast_to(k_cld, (layer_count, wavelength_count))
+    # Broadcast to (nlay, nwl) using implicit broadcasting
+    k_map = jnp.zeros((nlay, 1)) + k_cld[None, :]
     ssa = jnp.zeros_like(k_map)
     g = jnp.zeros_like(k_map)
     return k_map, ssa, g
@@ -360,33 +356,32 @@ def direct_nk(
     ssa   : (nlay, nwl) single scattering albedo
     g     : (nlay, nwl) asymmetry parameter (here zeros)
     """
-    wl = jnp.asarray(state["wl"])          # (nwl,) in micron
-    p_lay = jnp.asarray(state["p_lay"])    # (nlay,)
+    wl = state["wl"]          # (nwl,) in micron
+    p_lay = state["p_lay"]    # (nlay,)
 
     # -----------------------------
     # Retrieved / configured knobs
     # -----------------------------
-    r = 10.0 ** jnp.asarray(params["log_10_cld_r"])  # particle radius (your units)
-    sig = jnp.asarray(params["sigma"])
-    sig = jnp.maximum(sig, 1.0 + 1e-8)               # log-normal width must be >= 1
+    r = 10.0 ** params["log_10_cld_r"]  # particle radius (your units)
+    sig = params["sigma"]
+    sig = jnp.maximum(sig, 1.0 + 1e-8)  # log-normal width must be >= 1
 
     # Keep n positive for scattering math sanity (doesn't forbid n<1)
-    n_floor = jnp.asarray(params.get("n_floor", 1e-6))
+    n_floor = 1e-6
 
     # -----------------------------
     # Retrieve k(wl) from log-nodes
     # -----------------------------
-    node_idx = [0, 1, 2, 3, 4, 5, 6, 7]
-
-    wl_nodes = jnp.asarray([params[f"wl_node_{i}"] for i in node_idx])
+    # Use jnp.stack instead of list comprehension for efficiency
+    wl_nodes = jnp.stack([params[f"wl_node_{i}"] for i in range(8)])
     # Limit nk contribution to the wavelength span covered by the nodes
     wl_support_min = jnp.min(wl_nodes)
     wl_support_max = jnp.max(wl_nodes)
     wl_support_mask = jnp.logical_and(wl >= wl_support_min, wl <= wl_support_max)
 
-    # Retrieve n(wl) / k(wl) node values
-    n_nodes = jnp.asarray([params[f"n_{i}"] for i in node_idx])
-    log10_k_nodes = jnp.asarray([params[f"log_10_k_{i}"] for i in node_idx])
+    # Retrieve n(wl) / k(wl) node values using jnp.stack
+    n_nodes = jnp.stack([params[f"n_{i}"] for i in range(8)])
+    log10_k_nodes = jnp.stack([params[f"log_10_k_{i}"] for i in range(8)])
 
     n_interp = pchip_1d(wl, wl_nodes, n_nodes)
     log10_k_interp = pchip_1d(wl, wl_nodes, log10_k_nodes)
@@ -398,15 +393,15 @@ def direct_nk(
     # -----------------------------
     # Cloud vertical profile
     # -----------------------------
-    q_c_0  = 10.0 ** jnp.asarray(params["log_10_q_c_0"])
-    H_cld  = 10.0 ** jnp.asarray(params["log_10_H_cld"])
-    alpha  = 1.0 / jnp.maximum(H_cld, 1e-12)
+    q_c_0 = 10.0 ** params["log_10_q_c_0"]
+    H_cld = 10.0 ** params["log_10_H_cld"]
+    alpha = 1.0 / jnp.maximum(H_cld, 1e-12)
 
-    p_base = 10.0 ** jnp.asarray(params["log_10_p_base"]) * 1e6  # [bar -> Pa], as you had
-    width_base_dex = jnp.asarray(params.get("width_base_dex", 0.25))
+    p_base = 10.0 ** params["log_10_p_base"] * 1e6  # [bar -> Pa], as you had
+    width_base_dex = params.get("width_base_dex", 0.25)
     d_base = jnp.maximum(width_base_dex * jnp.log(10.0), 1e-12)
 
-    logP  = jnp.log(jnp.maximum(p_lay, 1e-30))
+    logP = jnp.log(jnp.maximum(p_lay, 1e-30))
     logPb = jnp.log(jnp.maximum(p_base, 1e-30))
 
     # gate: ~1 for P <= P_base (aloft), ~0 for P >> P_base (deep)
@@ -415,8 +410,11 @@ def direct_nk(
     q_c_lay = q_c_0 * (p_lay / jnp.maximum(p_base, 1e-30)) ** alpha * S_base
     q_c_lay = jnp.clip(q_c_lay, 0.0)
 
+    # Precompute log(sig)^2 once to avoid redundant computation
+    log_sig_sq = jnp.log(sig) ** 2
+
     # Effective radius for lognormal distribution
-    r_eff = r * jnp.exp(2.5 * (jnp.log(sig) ** 2))
+    r_eff = r * jnp.exp(2.5 * log_sig_sq)
 
     def _compute_active(args):
         wl_val, n_val, k_val = args
@@ -493,14 +491,62 @@ def direct_nk(
 
     Q_ext_vals, Q_sca_vals = jax.vmap(_per_wavelength)(wl, n, k, wl_support_mask)
 
+    # Reuse precomputed log_sig_sq
     k_cld = (
         (3.0 * q_c_lay[:, None] * Q_ext_vals[None, :])
         / (4.0 * (r * 1e-4))
-        * jnp.exp(0.5 * (jnp.log(sig) ** 2))
+        * jnp.exp(0.5 * log_sig_sq)
     )
 
     ssa_wl = jnp.clip(Q_sca_vals / jnp.maximum(Q_ext_vals, 1e-30), 0.0, 1.0)
-    ssa = jnp.broadcast_to(ssa_wl[None, :], k_cld.shape)
+    # Use implicit broadcasting instead of broadcast_to
+    ssa = ssa_wl[None, :] + jnp.zeros_like(q_c_lay[:, None])
     g = jnp.zeros_like(k_cld)
 
+    return k_cld, ssa, g
+
+
+def F18_cloud_2(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    wl = state["wl"]
+    p_lay = state["p_lay"]
+
+    r = 10.0 ** params["log_10_cld_r"]
+    sig = params["sigma"]
+    sig = jnp.maximum(sig, 1.0 + 1e-8)
+
+    Q0 = params["cld_Q0"]
+    a = params["cld_a"]
+
+    q_c_0 = 10.0 ** params["log_10_q_c_0"]
+    H_cld = 10.0 ** params["log_10_H_cld"]
+    alpha = 1.0 / jnp.maximum(H_cld, 1e-12)
+
+    p_base = 10.0 ** params["log_10_p_base"] * 1e6
+    width_base_dex = params.get("width_base_dex", 0.25)
+    d_base = jnp.maximum(width_base_dex * jnp.log(10.0), 1e-12)
+
+    logP = jnp.log(jnp.maximum(p_lay, 1e-30))
+    logPb = jnp.log(jnp.maximum(p_base, 1e-30))
+    S_base = 0.5 * (1.0 - jnp.tanh((logP - logPb) / d_base))
+
+    q_c_lay = q_c_0 * (p_lay / jnp.maximum(p_base, 1e-30)) ** alpha * S_base
+    q_c_lay = jnp.clip(q_c_lay, 0.0)
+
+    # Precompute log(sig)^2 once to avoid redundant computation
+    log_sig_sq = jnp.log(sig) ** 2
+
+    r_eff = r * jnp.exp(2.5 * log_sig_sq)
+    x = (2.0 * jnp.pi * r_eff) / jnp.maximum(wl, 1e-12)
+    Qext = 1.0 / (Q0 * x**-a + x**0.2)
+
+    # Reuse precomputed log_sig_sq
+    k_cld = (
+        (3.0 * q_c_lay[:, None] * Qext[None, :])
+        / (4.0 * (r * 1e-4))
+        * jnp.exp(0.5 * log_sig_sq)
+    )
+
+    # k_cld already has correct shape, no need for broadcast_to
+    ssa = jnp.zeros_like(k_cld)
+    g = jnp.zeros_like(k_cld)
     return k_cld, ssa, g

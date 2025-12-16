@@ -1,26 +1,5 @@
 """
-Temperature-Pressure Profile Module
-====================================
-
-This module provides various analytical and semi-analytical temperature-pressure (T-P)
-profile parameterizations for exoplanet and brown dwarf atmospheres. These profiles are
-commonly used in atmospheric retrieval and forward modeling.
-
-Functions
----------
-hopf_function : Compute the Hopf function for radiative transfer
-isothermal : Simple isothermal temperature profile
-Barstow : Temperature profile with isothermal upper layers and adiabatic deeper layers
-Milne : Milne temperature profile using internal temperature and IR opacity
-Guillot : Guillot (2010) analytical T-P profile including irradiation
-MandS09 : Madhusudhan & Seager (2009) 3-region analytical T-P profile
-picket_fence : Robinson & Catling (2012) picket fence radiative transfer T-P profile
-dry_convective_adjustment : Adjust temperature profile for convective stability
-
-Notes
------
-All temperature profiles return both level temperatures (T_lev) and layer temperatures (T_lay).
-Pressures are typically in units of bar or Pa depending on the function.
+TODO: Module-level docstring placeholder.
 """
 
 from __future__ import annotations
@@ -37,12 +16,10 @@ FIT_P = jnp.asarray([0.6162, -0.3799, 2.395, -2.041, 2.578])
 FIT_Q = jnp.asarray([-0.9799, 3.917, -3.17, 3.69])
 
 def hopf_function(tau: jnp.ndarray) -> jnp.ndarray:
-    """
-    Compute the Hopf function for radiative transfer.
+    """Compute the Hopf function for radiative transfer.
 
-    The Hopf function is a rational polynomial approximation with special patches
-    for low and high optical depth regimes. Used in analytical T-P profiles like
-    the Milne approximation.
+    This function provides a rational polynomial approximation for the Hopf
+    function, used in analytical T-P profiles.
 
     Parameters
     ----------
@@ -53,13 +30,6 @@ def hopf_function(tau: jnp.ndarray) -> jnp.ndarray:
     -------
     jnp.ndarray
         Hopf function value at the given optical depth.
-
-    Notes
-    -----
-    The function uses three regimes:
-    - Low tau (< 0.01): Linear interpolation
-    - Mid tau (0.01 - 5.0): Rational polynomial fit
-    - High tau (> 5.0): Linear fit in log10(tau) space
     """
     tau = jnp.asarray(tau)
     tiny = jnp.finfo(tau.dtype).tiny
@@ -87,18 +57,14 @@ def hopf_function(tau: jnp.ndarray) -> jnp.ndarray:
     return out
 
 def isothermal(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Generate an isothermal temperature profile.
-
-    The simplest temperature profile where temperature is constant at all pressure levels.
+    """Generate an isothermal temperature profile.
 
     Parameters
     ----------
     p_lev : jnp.ndarray
-        Pressure at levels (nlev,) [bar or Pa].
-    params : Dict[str, jnp.ndarray]
-        Dictionary containing:
-        - 'T_iso' : Isothermal temperature [K].
+        Pressure at atmospheric levels (nlev,).
+    params : dict[str, jnp.ndarray]
+        Dictionary containing 'T_iso' for the isothermal temperature in K.
 
     Returns
     -------
@@ -108,26 +74,24 @@ def isothermal(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.
         Temperature at layer midpoints (nlev-1,) [K].
     """
     nlev = jnp.size(p_lev)
-    T_iso = jnp.asarray(params["T_iso"])
+    # Parameter values are already JAX arrays, no need to wrap
+    T_iso = params["T_iso"]
     T_lev = jnp.full((nlev,), T_iso)
     T_lay = jnp.full((nlev-1,), T_iso)
     return T_lev, T_lay
 
 def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Generate a temperature profile with isothermal upper atmosphere and adiabatic deeper layers.
+    """Generate a Barstow et al. (2020) temperature profile.
 
-    This profile is isothermal at low pressures (p < 0.1 bar), follows an adiabat
-    between 0.1 and 1.0 bar, and becomes isothermal again at deeper pressures (p > 1 bar).
-    Based on Barstow et al. (2020).
+    This profile is isothermal at low pressures, follows an adiabat in the
+    middle, and becomes isothermal again at high pressures.
 
     Parameters
     ----------
     p_lev : jnp.ndarray
-        Pressure at levels (nlev,) [bar].
-    params : Dict[str, jnp.ndarray]
-        Dictionary containing:
-        - 'T_iso' : Temperature at the isothermal upper boundary [K].
+        Pressure at atmospheric levels (nlev,).
+    params : dict[str, jnp.ndarray]
+        Dictionary containing 'T_iso' for the upper isothermal temperature.
 
     Returns
     -------
@@ -135,13 +99,9 @@ def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
         Temperature at levels (nlev,) [K].
     T_lay : jnp.ndarray
         Temperature at layer midpoints (nlev-1,) [K].
-
-    Notes
-    -----
-    Uses kappa = 2/7 for the adiabatic index.
-    Transition pressures: p1 = 0.1 bar, p2 = 1.0 bar.
     """
-    T_iso = jnp.asarray(params["T_iso"])
+    # Parameter values are already JAX arrays, no need to wrap
+    T_iso = params["T_iso"]
     kappa = 2.0 / 7.0
     p1 = 0.1 * bar
     p2 = 1.0 * bar
@@ -154,22 +114,17 @@ def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
 
 
 def Milne(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Generate a Milne temperature profile for internal heating.
-
-    The Milne approximation is a radiative equilibrium solution for an atmosphere
-    heated from below (internal heating only). Uses the Hopf function to model
-    the temperature-optical depth relationship.
+    """Generate a Milne temperature profile for an internally heated atmosphere.
 
     Parameters
     ----------
     p_lev : jnp.ndarray
-        Pressure at levels (nlev,) [bar or Pa].
-    params : Dict[str, jnp.ndarray]
+        Pressure at atmospheric levels (nlev,).
+    params : dict[str, jnp.ndarray]
         Dictionary containing:
-        - 'log_10_g' : Log10 of surface gravity [cm/s^2].
-        - 'T_int' : Internal temperature [K].
-        - 'k_ir' : Infrared opacity [cm^2/g].
+        - 'log_10_g': Log10 of surface gravity [cm/s^2].
+        - 'T_int': Internal temperature [K].
+        - 'k_ir': Infrared opacity [cm^2/g].
 
     Returns
     -------
@@ -177,14 +132,11 @@ def Milne(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarr
         Temperature at levels (nlev,) [K].
     T_lay : jnp.ndarray
         Temperature at layer midpoints (nlev-1,) [K].
-
-    Notes
-    -----
-    The optical depth is calculated as tau_ir = k_ir / g * p_lev.
     """
-    g = 10.0**jnp.asarray(params["log_10_g"])
-    T_int = jnp.asarray(params["T_int"])
-    k_ir = jnp.asarray(params["k_ir"])
+    # Parameter values are already JAX arrays, no need to wrap
+    g = 10.0**params["log_10_g"]
+    T_int = params["T_int"]
+    k_ir = params["k_ir"]
     tau_ir = k_ir / g * p_lev
     T_lev = (0.75 * T_int**4 * (hopf_function(tau_ir) + tau_ir)) ** 0.25
     T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
@@ -192,25 +144,23 @@ def Milne(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarr
 
 
 def Guillot(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Generate a Guillot (2010) analytical temperature profile.
+    """Generate a Guillot (2010) analytical temperature profile.
 
-    This profile combines internal heating (Milne component) and external irradiation
-    (Guillot component) for irradiated exoplanet atmospheres. Assumes a two-stream
-    approximation with different opacities in the visible and infrared.
+    This profile combines internal heating and external irradiation using a
+    two-stream approximation with separate visible and infrared opacities.
 
     Parameters
     ----------
     p_lev : jnp.ndarray
-        Pressure at levels (nlev,) [bar or Pa].
-    params : Dict[str, jnp.ndarray]
+        Pressure at atmospheric levels (nlev,).
+    params : dict[str, jnp.ndarray]
         Dictionary containing:
-        - 'T_int' : Internal temperature [K].
-        - 'T_eq' : Equilibrium temperature from stellar irradiation [K].
-        - 'log_10_k_ir' : Log10 of infrared opacity [cm^2/g].
-        - 'log_10_gam_v' : Log10 of gamma = kappa_v / kappa_ir (visible/IR opacity ratio).
-        - 'log_10_g' : Log10 of surface gravity [cm/s^2].
-        - 'f_hem' : Hemispheric redistribution factor (0.25-1.0).
+        - 'T_int': Internal temperature [K].
+        - 'T_eq': Equilibrium temperature [K].
+        - 'log_10_k_ir': Log10 of infrared opacity [cm^2/g].
+        - 'log_10_gam_v': Log10 of the visible-to-IR opacity ratio.
+        - 'log_10_g': Log10 of surface gravity [cm/s^2].
+        - 'f_hem': Hemispheric redistribution factor.
 
     Returns
     -------
@@ -218,21 +168,14 @@ def Guillot(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
         Temperature at levels (nlev,) [K].
     T_lay : jnp.ndarray
         Temperature at layer midpoints (nlev-1,) [K].
-
-    Notes
-    -----
-    Based on Guillot (2010) A&A 520, A27.
-    The hemispheric factor f_hem represents heat redistribution:
-    - f_hem = 0.5: uniform redistribution
-    - f_hem = 1.0: no redistribution (day-side only)
-    - f_hem = 0.25: full redistribution over entire sphere
     """
-    T_int = jnp.asarray(params["T_int"])
-    T_eq = jnp.asarray(params["T_eq"])
-    k_ir = 10.0**jnp.asarray(params["log_10_k_ir"])
-    gam = 10.0**jnp.asarray(params["log_10_gam_v"])
-    g = 10.0**jnp.asarray(params["log_10_g"])
-    f = jnp.asarray(params["f_hem"])
+    # Parameter values are already JAX arrays, no need to wrap
+    T_int = params["T_int"]
+    T_eq = params["T_eq"]
+    k_ir = 10.0**params["log_10_k_ir"]
+    gam = 10.0**params["log_10_gam_v"]
+    g = 10.0**params["log_10_g"]
+    f = params["f_hem"]
     tau_ir = k_ir / g * p_lev
     sqrt3 = jnp.sqrt(3.0)
     milne = 0.75 * T_int**4 * (2.0 / 3.0 + tau_ir)
@@ -246,25 +189,20 @@ def Guillot(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
     return T_lev, T_lay
 
 def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray], ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Generate Madhusudhan & Seager (2009) three-region analytical temperature profile.
+    """Generate a Madhusudhan & Seager (2009) three-region T-P profile.
 
-    This profile divides the atmosphere into three regions with smooth transitions,
-    commonly used for hot Jupiter retrievals. The profile is defined by three
-    pressure boundaries and two slope parameters.
+    This profile divides the atmosphere into three regions defined by
+    pressure boundaries and slope parameters.
 
     Parameters
     ----------
     p_lev : jnp.ndarray
-        Pressure at levels (nlev,) [bar].
-    params : Dict[str, jnp.ndarray]
+        Pressure at atmospheric levels (nlev,).
+    params : dict[str, jnp.ndarray]
         Dictionary containing:
-        - 'a1' : Slope parameter for upper region (dimensionless).
-        - 'a2' : Slope parameter for middle region (dimensionless).
-        - 'log_10_P1' : Log10 of first transition pressure [bar].
-        - 'log_10_P2' : Log10 of second transition pressure [bar].
-        - 'log_10_P3' : Log10 of third transition pressure [bar].
-        - 'T_ref' : Reference temperature at top-of-atmosphere P0 [K].
+        - 'a1', 'a2': Slope parameters for the profile regions.
+        - 'log_10_P1', 'log_10_P2', 'log_10_P3': Transition pressures [bar].
+        - 'T_ref': Reference temperature at the top of the atmosphere [K].
 
     Returns
     -------
@@ -272,25 +210,16 @@ def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray], ) -> Tuple[jnp.n
         Temperature at levels (nlev,) [K].
     T_lay : jnp.ndarray
         Temperature at layer midpoints (nlev-1,) [K].
-
-    Notes
-    -----
-    Based on Madhusudhan & Seager (2009) ApJ 707, 24.
-    P0 is automatically determined as min(p_lev).
-    The three regions are:
-    - Region 1: P0 < P <= P1 (upper atmosphere)
-    - Region 2: P1 < P <= P3 (middle atmosphere)
-    - Region 3: P > P3 (lower atmosphere, isothermal at T3)
-    Temperature continuity is enforced at the boundaries.
     """
     p_lev = jnp.asarray(p_lev)
 
-    a1 = jnp.asarray(params["a1"])
-    a2 = jnp.asarray(params["a2"])
-    P1 = 10.0 ** jnp.asarray(params["log_10_P1"])
-    P2 = 10.0 ** jnp.asarray(params["log_10_P2"])
-    P3 = 10.0 ** jnp.asarray(params["log_10_P3"])
-    T0 = jnp.asarray(params["T_ref"])
+    # Parameter values are already JAX arrays, no need to wrap
+    a1 = params["a1"]
+    a2 = params["a2"]
+    P1 = 10.0 ** params["log_10_P1"]
+    P2 = 10.0 ** params["log_10_P2"]
+    P3 = 10.0 ** params["log_10_P3"]
+    T0 = params["T_ref"]
 
     # TOA pressure (since your p_lev is bottom->top)
     P0 = jnp.min(p_lev)
@@ -318,27 +247,22 @@ def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray], ) -> Tuple[jnp.n
 
 
 def picket_fence(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Generate a picket fence radiative transfer temperature profile.
+    """Generate a Robinson & Catling (2012) picket fence T-P profile.
 
-    This profile uses the Robinson & Catling (2012) picket fence approximation
-    for radiative transfer, which treats the opacity as a combination of discrete
-    spectral bins (pickets) to better capture wavelength-dependent absorption.
+    This profile uses a picket fence approximation for radiative transfer,
+    treating opacity as a combination of discrete spectral bins.
 
     Parameters
     ----------
     p_lev : jnp.ndarray
-        Pressure at levels (nlev,) [bar or Pa].
-    params : Dict[str, jnp.ndarray]
+        Pressure at atmospheric levels (nlev,).
+    params : dict[str, jnp.ndarray]
         Dictionary containing:
-        - 'T_int' : Internal temperature [K].
-        - 'T_eq' : Equilibrium temperature from stellar irradiation [K].
-        - 'log_10_k_ir' : Log10 of infrared opacity [cm^2/g].
-        - 'log_10_gam_v' : Log10 of gamma = kappa_v / kappa_ir (visible/IR opacity ratio).
-        - 'log_10_R' : Log10 of R parameter (picket fence opacity ratio).
-        - 'Beta' : Beta parameter (picket fence opacity distribution).
-        - 'log_10_g' : Log10 of surface gravity [cm/s^2].
-        - 'f_hem' : Hemispheric redistribution factor (0.25-1.0).
+        - 'T_int', 'T_eq': Internal and equilibrium temperatures [K].
+        - 'log_10_k_ir', 'log_10_gam_v': Opacity parameters.
+        - 'log_10_R', 'Beta': Picket fence model parameters.
+        - 'log_10_g': Log10 of surface gravity [cm/s^2].
+        - 'f_hem': Hemispheric redistribution factor.
 
     Returns
     -------
@@ -346,22 +270,17 @@ def picket_fence(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jn
         Temperature at levels (nlev,) [K].
     T_lay : jnp.ndarray
         Temperature at layer midpoints (nlev-1,) [K].
-
-    Notes
-    -----
-    Based on Robinson & Catling (2012) ApJ 757, 104.
-    This is a more sophisticated approximation than Guillot, accounting for
-    discrete opacity bins rather than gray atmosphere assumptions.
     """
 
-    T_int = jnp.asarray(params["T_int"])
-    T_eq = jnp.asarray(params["T_eq"])
-    k_ir = 10.0**jnp.asarray(params["log_10_k_ir"])
-    gam_v = 10.0**jnp.asarray(params["log_10_gam_v"])
-    R = 10.0**jnp.asarray(params["log_10_R"])
-    B = jnp.asarray(params["Beta"])
-    g = 10.0**jnp.asarray(params["log_10_g"])
-    f = jnp.asarray(params["f_hem"])
+    # Parameter values are already JAX arrays, no need to wrap
+    T_int = params["T_int"]
+    T_eq = params["T_eq"]
+    k_ir = 10.0**params["log_10_k_ir"]
+    gam_v = 10.0**params["log_10_gam_v"]
+    R = 10.0**params["log_10_R"]
+    B = params["Beta"]
+    g = 10.0**params["log_10_g"]
+    f = params["f_hem"]
 
     tau_ir = k_ir / g * p_lev
 
@@ -443,42 +362,30 @@ def picket_fence(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jn
     return T_lev, T_lay
 
 def dry_convective_adjustment(T_lay: jnp.ndarray, p_lay: jnp.ndarray, p_lev: jnp.ndarray, kappa: float, max_iter: int = 10, tol: float = 1e-6) -> jnp.ndarray:
-    """
-    Apply dry convective adjustment to enforce convective stability.
+    """Apply dry convective adjustment to a temperature profile.
 
-    Adjusts temperature profile to be convectively stable by ensuring that
-    T(i) >= T(i+1) * (p(i)/p(i+1))^kappa for all adjacent layers.
-
-    This implements the algorithm from dry_conv_adj_mod.f90, performing iterative
-    downward and upward passes through the atmosphere until the profile is stable
-    or max_iter is reached. When an unstable pair is found, both layers are adjusted
-    using a mass-weighted average temperature that preserves total enthalpy.
+    This function iteratively adjusts a temperature profile to ensure it is
+    convectively stable, preserving total enthalpy.
 
     Parameters
     ----------
     T_lay : jnp.ndarray
-        Layer temperatures (nlay,) [K].
+        Initial layer temperatures (nlay,).
     p_lay : jnp.ndarray
-        Layer pressures (nlay,) [bar or Pa].
+        Layer pressures (nlay,).
     p_lev : jnp.ndarray
-        Level/edge pressures (nlay+1,) [bar or Pa].
+        Level pressures (nlay+1,).
     kappa : float
-        R/cp ratio (dimensionless), typically ~0.286 for ideal gas.
+        Adiabatic index (R/cp).
     max_iter : int, optional
-        Maximum number of adjustment iterations (default: 10).
+        Maximum number of adjustment iterations.
     tol : float, optional
-        Tolerance for stability check (default: 1e-6).
+        Tolerance for the stability check.
 
     Returns
     -------
-    T_adjusted : jnp.ndarray
-        Convectively adjusted temperature profile (nlay,) [K].
-        Assumes instant adjustment (returns final state directly).
-
-    Notes
-    -----
-    Based on Ray Pierrehumbert's dry convective adjustment implementation.
-    The adjustment preserves total enthalpy through mass-weighted averaging.
+    jnp.ndarray
+        The convectively adjusted layer temperature profile (nlay,).
     """
     nlay = T_lay.shape[0]
 

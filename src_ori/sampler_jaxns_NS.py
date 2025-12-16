@@ -91,6 +91,7 @@ def make_jaxns_model(cfg, prep: Prepared) -> Model:
         return params
 
     # ----- Split-normal (asymmetric Gaussian) log-likelihood -----
+    @jax.jit
     def log_likelihood(theta_map: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         mu = prep.fm(theta_map)  # (N_obs,)
 

@@ -47,20 +47,20 @@ def zero_special_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nd
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary containing scalar entries `nlay` and `nwl`.
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Array of zeros with shape `(nlay, nwl)`.
     """
     del params
-    layer_count = int(state["nlay"])
-    wavelength_count = int(state["nwl"])
-    return jnp.zeros((layer_count, wavelength_count))
+    # Use shape directly without int() conversion for JIT compatibility
+    shape = (state["nlay"], state["nwl"])
+    return jnp.zeros(shape)
 
 
 def _interpolate_logsigma_1d(
@@ -72,16 +72,16 @@ def _interpolate_logsigma_1d(
 
     Parameters
     ----------
-    sigma_log : jax.numpy.ndarray, shape `(nT, nwl)`
+    sigma_log : jnp.ndarray, shape `(nT, nwl)`
         Log10 cross-sections.
-    temperature_grid : jax.numpy.ndarray, shape `(nT,)`
+    temperature_grid : jnp.ndarray, shape `(nT,)`
         Temperature grid in K.
-    layer_temperatures : jax.numpy.ndarray, shape `(nlay,)`
+    layer_temperatures : jnp.ndarray, shape `(nlay,)`
         Layer temperatures in K.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Log10 cross-sections interpolated to layers, shape `(nlay, nwl)`.
     """
     log_t_layers = jnp.log10(layer_temperatures)
@@ -110,15 +110,15 @@ def compute_hminus_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary with at least `wl`, `T_lay`, `nd_lay`, `rho_lay`,
         `vmr_lay`, and scalar `nlay`/`nwl`.
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         H- opacity in cm^2 g^-1 with shape `(nlay, nwl)`. Returns zeros when the
         CIA registry is not loaded or does not contain `H-`.
     """
@@ -140,7 +140,7 @@ def compute_hminus_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.
     number_density = state["nd_lay"]
     density = state["rho_lay"]
     layer_vmr = state["vmr_lay"]
-    layer_count = int(state["nlay"])
+    layer_count = state["nlay"]
 
     if "H-" not in layer_vmr:
         return zero_special_opacity(state, params)
@@ -151,7 +151,8 @@ def compute_hminus_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.
     temperature_grid = temperature_grids[hm_index]
     sigma_values = 10.0 ** _interpolate_logsigma_1d(sigma_log, temperature_grid, layer_temperatures)
 
-    vmr_hm = jnp.broadcast_to(jnp.asarray(layer_vmr["H-"]), (layer_count,))
+    # VMR value is already a JAX array, no need to wrap
+    vmr_hm = jnp.broadcast_to(layer_vmr["H-"], (layer_count,))
     normalization = vmr_hm * (number_density / density)
     return normalization[:, None] * sigma_values
 
@@ -161,14 +162,14 @@ def compute_special_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         Forward-model state dictionary.
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Parameter dictionary (currently unused).
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Total special opacity in cm^2 g^-1 with shape `(nlay, nwl)`.
     """
     return compute_hminus_opacity(state, params)

@@ -1,9 +1,6 @@
 """
 build_model.py
 ==============
-
-Overview:
-    Build a JAX-jitted forward model for the chosen physics / opacity / RT setup.
 """
 
 from __future__ import annotations
@@ -25,7 +22,7 @@ from opacity_ck import zero_ck_opacity, compute_ck_opacity
 from opacity_ray import zero_ray_opacity, compute_ray_opacity
 from opacity_cia import zero_cia_opacity, compute_cia_opacity
 from opacity_special import zero_special_opacity, compute_special_opacity
-from opacity_cloud import zero_cloud_opacity, grey_cloud, powerlaw_cloud, F18_cloud, direct_nk
+from opacity_cloud import zero_cloud_opacity, grey_cloud, powerlaw_cloud, F18_cloud, F18_cloud_2, direct_nk
 
 import build_opacities as XS
 from build_chem import infer_trace_species, infer_log10_vmr_keys, validate_log10_vmr_params
@@ -176,6 +173,8 @@ def build_forward_model(cfg, obs, stellar_flux=None, kk_cache=None, return_highr
         cld_opac_kernel = powerlaw_cloud
     elif cld_opac_scheme_str.lower() == "f18":
         cld_opac_kernel = F18_cloud
+    elif cld_opac_scheme_str.lower() == "f18_2":
+        cld_opac_kernel = F18_cloud_2
     elif cld_opac_scheme_str.lower() == "nk":
         cld_opac_kernel = direct_nk
     else:

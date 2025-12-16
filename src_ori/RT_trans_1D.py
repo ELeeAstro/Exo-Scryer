@@ -22,13 +22,13 @@ import build_opacities as XS
 def _get_ck_weights(state):
     g_weights = state.get("g_weights")
     if g_weights is not None:
-        return jnp.asarray(g_weights)
+        return g_weights
     if not XS.has_ck_data():
         raise RuntimeError("c-k g-weights not built; run build_opacities() with ck tables.")
     g_weights = XS.ck_g_weights()
     if g_weights.ndim > 1:
         g_weights = g_weights[0]
-    return jnp.asarray(g_weights)
+    return g_weights
 
 
 def _sum_opacity_components_ck(
@@ -43,8 +43,8 @@ def _sum_opacity_components_ck(
     Returns shape (nlay, nwl, ng).
     """
 
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
+    nlay = state["nlay"]
+    nwl = state["nwl"]
 
     line_opacity = opacity_components.get("line")
     if line_opacity is None:
@@ -64,8 +64,8 @@ def _sum_opacity_components_lbl(
     opacity_components: Mapping[str, jnp.ndarray],
 ) -> jnp.ndarray:
     """Return the summed opacity grid for all provided components."""
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
+    nlay = state["nlay"]
+    nwl = state["nwl"]
 
     if not opacity_components:
         return jnp.zeros((nlay, nwl))
@@ -90,9 +90,10 @@ def _build_transit_geometry(state: Dict[str, jnp.ndarray]) -> tuple[jnp.ndarray,
     area_weight : jax.numpy.ndarray
         Annulus area weights with shape `(nlay,)`.
     """
-    R0 = jnp.asarray(state["R0"])
-    z_lev = jnp.asarray(state["z_lev"])
-    z_lay = jnp.asarray(state["z_lay"])
+    # State values are already JAX arrays, no need to wrap
+    R0 = state["R0"]
+    z_lev = state["z_lev"]
+    z_lay = state["z_lay"]
 
     r_mid = R0 + z_lay
     r_low = R0 + z_lev[:-1]
@@ -127,10 +128,11 @@ def _transit_depth_from_opacity(
 ) -> jnp.ndarray:
     """Compute a transit spectrum for a provided total opacity grid."""
 
-    R0 = jnp.asarray(state["R0"])
-    R_s = jnp.asarray(state["R_s"])
-    rho = jnp.asarray(state["rho_lay"])
-    dz = jnp.asarray(state["dz"])
+    # State values are already JAX arrays, no need to wrap
+    R0 = state["R0"]
+    R_s = state["R_s"]
+    rho = state["rho_lay"]
+    dz = state["dz"]
 
     k_floor = 1.0e-99
     k_eff = jnp.maximum(k_tot, k_floor)
@@ -194,11 +196,13 @@ def compute_transit_depth_1d(
 
     geometry = _build_transit_geometry(state)
 
-    if state["ck"] == True:
+    # Use direct comparison instead of == True for JIT compatibility
+    if state["ck"]:
         # Corr-k mode: build total opacity then integrate over g-points
         k_tot = _sum_opacity_components_ck(state, opacity_components)  # (nlay, nwl, ng)
         if "f_cloud" in params and "cloud" in opacity_components:
-            f_cloud = jnp.clip(jnp.asarray(params["f_cloud"]), 0.0, 1.0)
+            # Parameter is already a JAX array, no need to wrap
+            f_cloud = jnp.clip(params["f_cloud"], 0.0, 1.0)
             cloud_component = opacity_components["cloud"]
             if cloud_component.ndim == 2:
                 cloud_component = cloud_component[:, :, None]
@@ -213,7 +217,8 @@ def compute_transit_depth_1d(
         k_tot = _sum_opacity_components_lbl(state, opacity_components) # Return (nlay, nwl)
 
         if "f_cloud" in params and "cloud" in opacity_components:
-            f_cloud = jnp.clip(jnp.asarray(params["f_cloud"]), 0.0, 1.0)
+            # Parameter is already a JAX array, no need to wrap
+            f_cloud = jnp.clip(params["f_cloud"], 0.0, 1.0)
             k_no_cloud = k_tot - opacity_components["cloud"]
             D_cloud = _transit_depth_from_opacity(state, k_tot, geometry=geometry)
             D_clear = _transit_depth_from_opacity(state, k_no_cloud, geometry=geometry)

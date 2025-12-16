@@ -1,14 +1,6 @@
 """
 build_opacities.py
 ==================
-
-Overview:
-    Reads the individual opacity tables and produces the global arrays used by the retrieval model
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from pathlib import Path

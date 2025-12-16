@@ -37,21 +37,21 @@ _DT_SAFE = 1.0e-12
 def _get_ck_weights(state: Dict[str, jnp.ndarray]) -> jnp.ndarray:
     g_weights = state.get("g_weights")
     if g_weights is not None:
-        return jnp.asarray(g_weights)
+        return g_weights
     if not XS.has_ck_data():
         raise RuntimeError("c-k g-weights not built; run build_opacities() with ck tables.")
     g_weights = XS.ck_g_weights()
     if g_weights.ndim > 1:
         g_weights = g_weights[0]
-    return jnp.asarray(g_weights)
+    return g_weights
 
 
 def _sum_opacity_components_ck(
     state: Dict[str, jnp.ndarray],
     opacity_components: Mapping[str, jnp.ndarray],
 ) -> jnp.ndarray:
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
+    nlay = state["nlay"]
+    nwl = state["nwl"]
 
     if not opacity_components:
         g_weights = _get_ck_weights(state)
@@ -76,8 +76,8 @@ def _sum_opacity_components_lbl(
     state: Dict[str, jnp.ndarray],
     opacity_components: Mapping[str, jnp.ndarray],
 ) -> jnp.ndarray:
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
+    nlay = state["nlay"]
+    nwl = state["nwl"]
 
     if not opacity_components:
         return jnp.zeros((nlay, nwl))
@@ -93,11 +93,10 @@ def _sum_opacity_components_lbl(
 
 
 def _planck_lambda(wavelength_cm: jnp.ndarray, temperature: jnp.ndarray) -> jnp.ndarray:
-    wl = jnp.asarray(wavelength_cm)
-    T = jnp.asarray(temperature)
-    exponent = (h * c_light) / (wl * kb * jnp.maximum(T, 1.0))
+    # Inputs are already JAX arrays, no need to wrap
+    exponent = (h * c_light) / (wavelength_cm * kb * jnp.maximum(temperature, 1.0))
     expm1 = jnp.expm1(jnp.clip(exponent, a_min=None, a_max=80.0))
-    prefactor = 2.0 * h * c_light**2 / (wl**5)
+    prefactor = 2.0 * h * c_light**2 / (wavelength_cm**5)
     return prefactor / jnp.maximum(expm1, 1e-300)
 
 
@@ -118,14 +117,15 @@ def _solve_alpha_eaa(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     nlev, nwl = be_levels.shape
     nlay = nlev - 1
-    be_levels = jnp.asarray(be_levels, dtype=jnp.float64)[::-1]
-    dtau_layers = jnp.asarray(dtau_layers, dtype=jnp.float64)[::-1]
-    ssa = jnp.asarray(ssa, dtype=jnp.float64)[::-1]
-    g_phase = jnp.asarray(g_phase, dtype=jnp.float64)[::-1]
+    # Convert to float64 and reverse in one operation per array
+    be_levels = be_levels.astype(jnp.float64)[::-1]
+    dtau_layers = dtau_layers.astype(jnp.float64)[::-1]
+    ssa = ssa.astype(jnp.float64)[::-1]
+    g_phase = g_phase.astype(jnp.float64)[::-1]
     al = be_levels[1:] - be_levels[:-1]
     lw_up_sum = jnp.zeros((nlev, nwl))
     lw_down_sum = jnp.zeros((nlev, nwl))
-    be_internal = jnp.asarray(be_internal)
+    # be_internal is already a JAX array
 
     mask = g_phase >= 1.0e-4
     fc = jnp.where(mask, g_phase**nstreams, 0.0)
@@ -202,55 +202,96 @@ def compute_emission_spectrum_1d(
     params: Dict[str, jnp.ndarray],
     opacity_components: Mapping[str, jnp.ndarray],
 ) -> jnp.ndarray:
-    ck_mode = bool(state.get("ck", False))
-    wl_cm = jnp.asarray(state["wl"], dtype=jnp.float64) * 1.0e-4
-    T_lev = jnp.asarray(state["T_lev"], dtype=jnp.float64)
-    rho_lay = jnp.asarray(state["rho_lay"], dtype=jnp.float64)
-    dz = jnp.asarray(state["dz"], dtype=jnp.float64)
+    # Use direct comparison instead of bool() for JIT compatibility
+    ck_mode = state.get("ck", False)
+    wl_cm = state["wl"].astype(jnp.float64) * 1.0e-4
+    T_lev = state["T_lev"].astype(jnp.float64)
+    rho_lay = state["rho_lay"].astype(jnp.float64)
+    dz = state["dz"].astype(jnp.float64)
     be_levels = _planck_lambda(wl_cm[None, :], T_lev[:, None])
     if "T_int" in params:
-        T_int = jnp.asarray(params["T_int"], dtype=jnp.float64)
+        T_int = params["T_int"].astype(jnp.float64)
         be_internal = _planck_lambda(wl_cm[None, :], T_int[None, None])[0]
     else:
         be_internal = jnp.zeros_like(be_levels[-1])
 
     if ck_mode:
-        k_tot = _sum_opacity_components_ck(state, opacity_components)
-        ssa_ck, g_ck = _compute_scattering_properties(
-            opacity_components,
-            state,
-            k_tot,
-            ck_mode=True,
-        )
-        dtau_ck = _layer_optical_depth_ck(k_tot, rho_lay, dz)
-        g_weights = _get_ck_weights(state)
-        dtau_by_g = jnp.moveaxis(dtau_ck, -1, 0)
-        ssa_by_g = jnp.moveaxis(ssa_ck, -1, 0)
-        g_by_g = jnp.moveaxis(g_ck, -1, 0)
+        def _lw_up_for_components(components: Mapping[str, jnp.ndarray], k_tot_local: jnp.ndarray) -> jnp.ndarray:
+            ssa_ck, g_ck = _compute_scattering_properties(
+                components,
+                state,
+                k_tot_local,
+                ck_mode=True,
+            )
+            dtau_ck = _layer_optical_depth_ck(k_tot_local, rho_lay, dz)
+            g_weights = _get_ck_weights(state)
+            dtau_by_g = jnp.moveaxis(dtau_ck, -1, 0)
+            ssa_by_g = jnp.moveaxis(ssa_ck, -1, 0)
+            g_by_g = jnp.moveaxis(g_ck, -1, 0)
+            g_weights = g_weights[: dtau_by_g.shape[0]]
 
-        g_weights = g_weights[: dtau_by_g.shape[0]]
+            def _scan_body(lw_up_accum, inputs):
+                dtau_slice, ssa_slice, g_slice, weight = inputs
+                lw_up_g, _ = _solve_alpha_eaa(be_levels, dtau_slice, ssa_slice, g_slice, be_internal)
+                lw_up_accum = lw_up_accum + weight.astype(lw_up_accum.dtype) * lw_up_g
+                return lw_up_accum, None
 
-        def _scan_body(lw_up_accum, inputs):
-            dtau_slice, ssa_slice, g_slice, weight = inputs
-            lw_up_g, _ = _solve_alpha_eaa(be_levels, dtau_slice, ssa_slice, g_slice, be_internal)
-            lw_up_accum = lw_up_accum + jnp.asarray(weight, dtype=lw_up_accum.dtype) * lw_up_g
-            return lw_up_accum, None
+            lw_up_init = jnp.zeros_like(be_levels)
+            lw_up_out, _ = lax.scan(_scan_body, lw_up_init, (dtau_by_g, ssa_by_g, g_by_g, g_weights))
+            return lw_up_out
 
-        lw_up_init = jnp.zeros_like(be_levels)
-        lw_up, _ = lax.scan(_scan_body, lw_up_init, (dtau_by_g, ssa_by_g, g_by_g, g_weights))
+        k_tot_cloud = _sum_opacity_components_ck(state, opacity_components)
+        lw_up_cloud = _lw_up_for_components(opacity_components, k_tot_cloud)
+
+        if "f_cloud" in params and "cloud" in opacity_components:
+            f_cloud = jnp.clip(params["f_cloud"], 0.0, 1.0)
+            cloud_ext = opacity_components["cloud"]
+            k_tot_clear = k_tot_cloud - cloud_ext[:, :, None]
+
+            zeros = jnp.zeros_like(cloud_ext)
+            opacity_clear = dict(opacity_components)
+            opacity_clear["cloud"] = zeros
+            opacity_clear["cloud_ssa"] = zeros
+            opacity_clear["cloud_g"] = zeros
+
+            lw_up_clear = _lw_up_for_components(opacity_clear, k_tot_clear)
+            lw_up = f_cloud * lw_up_cloud + (1.0 - f_cloud) * lw_up_clear
+        else:
+            lw_up = lw_up_cloud
     else:
-        k_tot = _sum_opacity_components_lbl(state, opacity_components)
-        ssa_lbl, g_lbl = _compute_scattering_properties(
-            opacity_components,
-            state,
-            k_tot,
-            ck_mode=False,
-        )
-        dtau_lbl = _layer_optical_depth_lbl(k_tot, rho_lay, dz)
-        lw_up, _ = _solve_alpha_eaa(be_levels, dtau_lbl, ssa_lbl, g_lbl, be_internal)
+        def _lw_up_for_components(components: Mapping[str, jnp.ndarray], k_tot_local: jnp.ndarray) -> jnp.ndarray:
+            ssa_lbl, g_lbl = _compute_scattering_properties(
+                components,
+                state,
+                k_tot_local,
+                ck_mode=False,
+            )
+            dtau_lbl = _layer_optical_depth_lbl(k_tot_local, rho_lay, dz)
+            lw_up_out, _ = _solve_alpha_eaa(be_levels, dtau_lbl, ssa_lbl, g_lbl, be_internal)
+            return lw_up_out
+
+        k_tot_cloud = _sum_opacity_components_lbl(state, opacity_components)
+        lw_up_cloud = _lw_up_for_components(opacity_components, k_tot_cloud)
+
+        if "f_cloud" in params and "cloud" in opacity_components:
+            f_cloud = jnp.clip(params["f_cloud"], 0.0, 1.0)
+            cloud_ext = opacity_components["cloud"]
+            k_tot_clear = k_tot_cloud - cloud_ext
+
+            zeros = jnp.zeros_like(cloud_ext)
+            opacity_clear = dict(opacity_components)
+            opacity_clear["cloud"] = zeros
+            opacity_clear["cloud_ssa"] = zeros
+            opacity_clear["cloud_g"] = zeros
+
+            lw_up_clear = _lw_up_for_components(opacity_clear, k_tot_clear)
+            lw_up = f_cloud * lw_up_cloud + (1.0 - f_cloud) * lw_up_clear
+        else:
+            lw_up = lw_up_cloud
 
     top_flux = lw_up[0]
-    if bool(state.get("is_brown_dwarf", False)):
+    # Use direct comparison instead of bool() for JIT compatibility
+    if state.get("is_brown_dwarf", False):
         return top_flux
     return _scale_flux_ratio(top_flux, state, params)
 
@@ -261,14 +302,14 @@ def _compute_scattering_properties(
     k_tot: jnp.ndarray,
     ck_mode: bool,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    nlay = int(state["nlay"])
-    nwl = int(state["nwl"])
+    nlay = state["nlay"]
+    nwl = state["nwl"]
 
     def _get_component(name, shape):
         arr = opacity_components.get(name)
         if arr is None:
             return jnp.zeros(shape)
-        return jnp.asarray(arr)
+        return arr
 
     base_shape = (nlay, nwl)
     k_ray = _get_component("rayleigh", base_shape)
@@ -296,12 +337,12 @@ def _scale_flux_ratio(
 ) -> jnp.ndarray:
     stellar_flux = state.get("stellar_flux")
     if stellar_flux is not None:
-        F_star = jnp.asarray(stellar_flux, dtype=jnp.float64)
+        F_star = stellar_flux.astype(jnp.float64)
     else:
         if "F_star" not in params:
             raise ValueError("compute_emission_spectrum_1d requires stellar_flux or parameter 'F_star'.")
-        F_star = jnp.asarray(params["F_star"], dtype=jnp.float64)
-    R0 = jnp.asarray(state["R0"], dtype=jnp.float64)
-    R_s = jnp.asarray(state["R_s"], dtype=jnp.float64)
+        F_star = params["F_star"].astype(jnp.float64)
+    R0 = state["R0"].astype(jnp.float64)
+    R_s = state["R_s"].astype(jnp.float64)
     scale = (R0**2) / (jnp.maximum(F_star, 1.0e-30) * (R_s**2))
     return flux * scale

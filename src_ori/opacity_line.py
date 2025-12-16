@@ -52,14 +52,14 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
 
     Parameters
     ----------
-    layer_pressures_bar : jax.numpy.ndarray, shape `(nlay,)`
+    layer_pressures_bar : jnp.ndarray, shape `(nlay,)`
         Layer pressures in bar.
-    layer_temperatures : jax.numpy.ndarray, shape `(nlay,)`
+    layer_temperatures : jnp.ndarray, shape `(nlay,)`
         Layer temperatures in K.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Cross-sections in linear space with shape `(nspecies, nlay, nwl)`.
     """
     # Direct access to cached registry data (no redundant caching needed)
@@ -83,14 +83,14 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
 
         Parameters
         ----------
-        sigma_3d : jax.numpy.ndarray
+        sigma_3d : jnp.ndarray
             Log10 cross-sections with shape `(nT, nP, nwl)`.
-        temp_grid : jax.numpy.ndarray
+        temp_grid : jnp.ndarray
             Temperature grid (K) with shape `(nT,)`.
 
         Returns
         -------
-        jax.numpy.ndarray
+        jnp.ndarray
             Log10 cross-sections interpolated to layers with shape `(nlay, nwl)`.
         """
         # sigma_3d: (n_temp, n_pressure, n_wavelength)
@@ -129,21 +129,19 @@ def zero_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarr
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
-        State dictionary containing `p_lay` and `wl` to determine output shape.
-    params : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
+        State dictionary containing scalar entries `nlay` and `nwl`.
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Array of zeros with shape `(nlay, nwl)`.
     """
-    layer_pressures = state["p_lay"]
-    wavelengths = state["wl"]
-    layer_count = jnp.size(layer_pressures)
-    wavelength_count = jnp.size(wavelengths)
-    return jnp.zeros((layer_count, wavelength_count))
+    # Use shape directly without jnp.size() for JIT compatibility
+    shape = (state["nlay"], state["nwl"])
+    return jnp.zeros(shape)
 
 
 def compute_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
@@ -151,30 +149,25 @@ def compute_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nd
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary with at least:
 
-        - `p_lay` : jax.numpy.ndarray, shape `(nlay,)`
+        - `p_lay` : jnp.ndarray, shape `(nlay,)`
             Layer pressures in microbar.
-        - `T_lay` : jax.numpy.ndarray, shape `(nlay,)`
+        - `T_lay` : jnp.ndarray, shape `(nlay,)`
             Layer temperatures in K.
-        - `mu_lay` : jax.numpy.ndarray, shape `(nlay,)`
+        - `mu_lay` : jnp.ndarray, shape `(nlay,)`
             Mean molecular weight per layer (amu).
         - `vmr_lay` : Mapping[str, Any]
             Mapping from species name to volume mixing ratio per layer. Values
             may be a scalar or a length-`nlay` vector.
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Line absorption opacity in cm^2 g^-1 with shape `(nlay, nwl)`.
-
-    Raises
-    ------
-    KeyError
-        If a required species name is missing from `state["vmr_lay"]`.
     """
     layer_pressures = state["p_lay"]
     layer_temperatures = state["T_lay"]
@@ -186,8 +179,9 @@ def compute_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nd
     layer_count = layer_pressures.shape[0]
 
     # Direct lookup - species names must match VMR keys exactly
+    # VMR values are already JAX arrays, no need to wrap
     mixing_ratios = jnp.stack(
-        [jnp.broadcast_to(jnp.asarray(layer_vmr[name]), (layer_count,)) for name in species_names],
+        [jnp.broadcast_to(layer_vmr[name], (layer_count,)) for name in species_names],
         axis=0,
     )
 

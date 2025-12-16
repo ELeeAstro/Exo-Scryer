@@ -1,56 +1,4 @@
-"""
-opacity_ck.py
-==============
-
-Overview
---------
-Correlated-k opacity module for handling pre-banded opacity tables with
-Gauss quadrature integration over g-points.
-
-This module provides functionality for computing atmospheric opacities using
-the correlated-k method, which bins absorption cross-sections by their
-cumulative probability distribution (g-space) rather than by wavelength alone.
-This enables efficient radiative transfer calculations while maintaining
-accuracy.
-
-Key Features
-------------
-- Bilinear interpolation of cross-sections on (log T, log P) grids
-- Support for multiple mixing schemes:
-  * RORR (Random Overlap with Ranked Reordering)
-  * PRAS (Pre-mixed Random Assumption Scheme)
-- JAX-compatible for automatic differentiation and JIT compilation
-- Efficient batched processing using vmap
-
-Method
-------
-The correlated-k method represents opacity as a function of cumulative
-probability (g-point) rather than wavelength, allowing efficient integration:
-
-1. Cross-sections are interpolated to atmospheric layer conditions
-2. Species are mixed using either RORR or PRAS schemes
-3. Resulting opacity retains g-dimension for quadrature integration in RT
-
-Key Functions
--------------
-compute_ck_opacity : Main opacity computation with mixing
-zero_ck_opacity : Placeholder zero opacity when CK is disabled
-_interpolate_sigma : Bilinear interpolation on (T, P) grids
-_get_ck_quadrature : Extract g-points and weights for integration
-
-Mixing Implementations
-----------------------
-See separate modules for mixing algorithm implementations:
-- ck_mix_RORR : Random Overlap with Ranked Reordering (optimized)
-- ck_mix_PRAS : Pre-mixed Random Assumption Scheme (placeholder)
-
-Notes
------
-- All interpolation is performed in log10 space for T and P
-- Cross-sections are stored in log10 space and converted back after interpolation
-- The g-dimension is preserved throughout for integration in the RT solver
-- Mixing schemes assume aligned g-grids across all species
-"""
+"""Correlated-k opacity with species mixing."""
 
 from typing import Dict
 
@@ -64,13 +12,8 @@ from ck_mix_RORR import mix_k_tables_rorr
 from ck_mix_PRAS import mix_k_tables_pras
 
 
-def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp.ndarray) -> jnp.ndarray:
-    """
-    Bilinear interpolation of correlated-k cross sections on (log T, log P) grids.
-
-    Performs bilinear interpolation in log10(T) and log10(P) space for each species.
-    Cross-sections are stored in log10 space and converted back to linear space
-    after interpolation.
+def _interpolate_sigma_log(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp.ndarray) -> jnp.ndarray:
+    """Bilinear interpolation of correlated-k cross sections on (log T, log P) grids.
 
     Parameters
     ----------
@@ -84,12 +27,6 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
     jnp.ndarray
         Interpolated cross-sections in cm^2/molecule
         Shape: (n_species, n_layers, n_wavelength, n_g)
-
-    Notes
-    -----
-    - Interpolation is performed in log10 space for both T and P
-    - Cross-sections from XS.ck_sigma_cube() are in log10 space
-    - Temperature grids can vary by species (e.g., different ranges for H2O vs CO2)
     """
     sigma_cube = XS.ck_sigma_cube()
     pressure_grid = XS.ck_pressure_grid()
@@ -107,11 +44,7 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
     p_weight = jnp.clip(p_weight, 0.0, 1.0)
 
     def _interp_one_species(sigma_4d, temp_grid):
-        """
-        Interpolate cross sections for a single species.
-
-        Performs bilinear interpolation in log10(T) and log10(P) space.
-        Pressure indices/weights are already computed in the outer scope.
+        """Interpolate cross sections for a single species.
 
         Parameters
         ----------
@@ -154,16 +87,20 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
 
     # Vectorize over all species
     sigma_log = jax.vmap(_interp_one_species)(sigma_cube, temperature_grids)
-    return 10.0 ** sigma_log
+    return sigma_log
+
+
+def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp.ndarray) -> jnp.ndarray:
+    """Interpolate correlated-k cross-sections and return linear-space values."""
+    return 10.0 ** _interpolate_sigma_log(layer_pressures_bar, layer_temperatures)
 
 
 def _get_ck_quadrature(state: Dict[str, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Extract g-points and quadrature weights for correlated-k integration.
+    """Extract g-points and quadrature weights for correlated-k integration.
 
     Parameters
     ----------
-    state : Dict[str, jnp.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary, optionally containing pre-loaded 'g_weights'
 
     Returns
@@ -172,55 +109,42 @@ def _get_ck_quadrature(state: Dict[str, jnp.ndarray]) -> tuple[jnp.ndarray, jnp.
         G-points for quadrature evaluation, shape (n_g,)
     weights : jnp.ndarray
         Quadrature weights for integration, shape (n_g,)
-
-    Notes
-    -----
-    - If g-points/weights are 2D, uses the first row (assumes identical across wavelengths)
-    - Weights should sum to 1.0 for proper normalization
     """
     g_points_all = XS.ck_g_points()
     g_weights_all = state.get("g_weights")
     if g_weights_all is None:
         g_weights_all = XS.ck_g_weights()
 
+    # Values are already JAX arrays, no need to wrap
     if g_points_all.ndim == 1:
-        g_eval = jnp.asarray(g_points_all)
+        g_eval = g_points_all
     else:
-        g_eval = jnp.asarray(g_points_all[0])
+        g_eval = g_points_all[0]
 
     if g_weights_all.ndim == 1:
-        weights = jnp.asarray(g_weights_all)
+        weights = g_weights_all
     else:
-        weights = jnp.asarray(g_weights_all[0])
+        weights = g_weights_all[0]
 
     return g_eval, weights
 
 
 def zero_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-    """
-    Return zero opacity (placeholder for when CK opacities are disabled).
-
-    Used when correlated-k opacity is not enabled in the model configuration,
-    but the RT solver still expects an opacity array with g-dimension.
+    """Return zero opacity (placeholder for when CK opacities are disabled).
 
     Parameters
     ----------
-    state : Dict[str, jnp.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary containing:
         - p_lay: Layer pressures
         - wl: Wavelengths
-    params : Dict[str, jnp.ndarray]
+    params : dict[str, jnp.ndarray]
         Parameter dictionary (unused)
 
     Returns
     -------
     jnp.ndarray
         Zero array of shape (n_layers, n_wavelength, n_g)
-
-    Notes
-    -----
-    - Determines n_g from loaded CK data even when not actively used
-    - Ensures consistent output shape for RT solver
     """
     layer_pressures = state["p_lay"]
     wavelengths = state["wl"]
@@ -235,17 +159,11 @@ def zero_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray
 
 
 def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-    """
-    Compute correlated-k opacity with species mixing.
-
-    Main entry point for computing atmospheric opacity using the correlated-k method.
-    Performs interpolation of pre-computed cross-sections to atmospheric layer
-    conditions, mixes species using the specified algorithm (RORR or PRAS), and
-    converts to mass opacity.
+    """Compute correlated-k opacity with species mixing.
 
     Parameters
     ----------
-    state : Dict[str, jnp.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary containing:
         - p_lay : Layer pressures (microbar)
         - T_lay : Layer temperatures (K)
@@ -253,7 +171,7 @@ def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
         - vmr_lay : Dictionary of volume mixing ratios by species
         - wl : Wavelengths (microns)
         - ck_mix : Mixing method, either 'RORR' or 'PRAS' (optional, defaults to 'RORR')
-    params : Dict[str, jnp.ndarray]
+    params : dict[str, jnp.ndarray]
         Parameter dictionary (currently unused, VMRs come from state['vmr_lay'])
 
     Returns
@@ -261,19 +179,6 @@ def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
     jnp.ndarray
         Total atmospheric opacity in cm^2/g
         Shape: (n_layers, n_wavelength, n_g)
-
-    Notes
-    -----
-    - Pressures are converted from dyne to bar for interpolation
-    - Cross-sections are interpolated in log10(T), log10(P) space
-    - Species mixing uses either RORR (default) or PRAS algorithm
-    - Output preserves g-dimension for quadrature integration in RT solver
-    - Mass opacity = cross-section / (mean_molecular_weight * amu)
-
-    See Also
-    --------
-    ck_mix_RORR.mix_k_tables_rorr : RORR mixing algorithm (optimized)
-    ck_mix_PRAS.mix_k_tables_pras : PRAS mixing algorithm (placeholder)
     """
     layer_pressures = state["p_lay"]
     layer_temperatures = state["T_lay"]
@@ -285,14 +190,13 @@ def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
     layer_vmr = state["vmr_lay"]
 
     # Direct lookup - species names must match VMR keys exactly
+    # VMR values are already JAX arrays, no need to wrap
     mixing_ratios = jnp.stack(
-        [jnp.broadcast_to(jnp.asarray(layer_vmr[name]), (layer_count,)) for name in species_names],
+        [jnp.broadcast_to(layer_vmr[name], (layer_count,)) for name in species_names],
         axis=0,
     )
 
-    # Interpolate cross sections for all species at layer conditions
-    # sigma_values shape: (n_species, n_layers, n_wavelength, n_g)
-    sigma_values = _interpolate_sigma(layer_pressures / 1e6, layer_temperatures)
+    sigma_log = _interpolate_sigma_log(layer_pressures / 1e6, layer_temperatures)
 
     g_points, g_weights = _get_ck_quadrature(state)
 
@@ -302,13 +206,14 @@ def compute_ck_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
     if isinstance(ck_mix_raw, str):
         ck_mix_code = 2 if ck_mix_raw.upper() == "PRAS" else 1
     else:
-        ck_mix_code = int(ck_mix_raw)
+        # Avoid int() conversion for JIT compatibility
+        ck_mix_code = ck_mix_raw
 
     # Perform mixing based on selected method
     if ck_mix_code == 2:
-        mixed_sigma = mix_k_tables_pras(sigma_values, mixing_ratios, g_points, g_weights)
+        mixed_sigma = mix_k_tables_pras(sigma_log, mixing_ratios, g_points, g_weights)
     else:  # Default to RORR
-        mixed_sigma = mix_k_tables_rorr(sigma_values, mixing_ratios, g_points, g_weights)
+        mixed_sigma = mix_k_tables_rorr(10.0 ** sigma_log, mixing_ratios, g_points, g_weights)
 
     # Convert to mass opacity (cm^2 / g)
     total_opacity = mixed_sigma / (layer_mu[:, None, None] * amu)

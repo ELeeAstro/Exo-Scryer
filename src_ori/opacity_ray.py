@@ -45,20 +45,20 @@ def zero_ray_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarra
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary containing scalar entries `nlay` (number of layers)
         and `nwl` (number of wavelengths).
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Array of zeros with shape `(nlay, nwl)`.
     """
-    layer_count = int(state["nlay"])
-    wavelength_count = int(state["nwl"])
-    return jnp.zeros((layer_count, wavelength_count))
+    # Use shape directly without int() conversion for JIT compatibility
+    shape = (state["nlay"], state["nwl"])
+    return jnp.zeros(shape)
 
 
 def compute_ray_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
@@ -66,34 +66,26 @@ def compute_ray_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nda
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary with at least:
 
-        - `wl` : jax.numpy.ndarray, shape `(nwl,)`
+        - `wl` : jnp.ndarray, shape `(nwl,)`
             Forward-model wavelength grid.
-        - `nd_lay` : jax.numpy.ndarray, shape `(nlay,)`
+        - `nd_lay` : jnp.ndarray, shape `(nlay,)`
             Layer number density.
-        - `rho_lay` : jax.numpy.ndarray, shape `(nlay,)`
+        - `rho_lay` : jnp.ndarray, shape `(nlay,)`
             Layer mass density.
         - `vmr_lay` : Mapping[str, Any]
             Mapping from species name to volume mixing ratio per layer. Values
             may be a scalar or a length-`nlay` vector.
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Rayleigh opacity in cm^2 g^-1 with shape `(nlay, nwl)`. Returns zeros
         when the Rayleigh registry has no data loaded.
-
-    Raises
-    ------
-    ValueError
-        If the Rayleigh wavelength grid does not match `state["wl"]`, or if a
-        required mixing-ratio entry has an incompatible shape.
-    KeyError
-        If a required Rayleigh species name is missing from `state["vmr_lay"]`.
     """
     if not XR.has_ray_data():
         return zero_ray_opacity(state, params)
@@ -112,10 +104,11 @@ def compute_ray_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nda
     species_names = XR.ray_species_names()
 
     # Direct lookup - species names must match VMR keys exactly
+    # VMR values are already JAX arrays, no need to wrap
     mixing_ratios = jnp.stack(
-        [jnp.broadcast_to(jnp.asarray(layer_vmr[name]), (layer_count,)) for name in species_names],
+        [jnp.broadcast_to(layer_vmr[name], (layer_count,)) for name in species_names],
         axis=0,
     )
 
-    sigma_weighted = jnp.sum(sigma_values * mixing_ratios[:, None, :], axis=0)  # (nwl, nlay)
+    sigma_weighted = jnp.sum(sigma_values[:, :, None] * mixing_ratios[:, None, :], axis=0)  # (nwl, nlay)
     return (number_density[:, None] * sigma_weighted.T) / density[:, None]

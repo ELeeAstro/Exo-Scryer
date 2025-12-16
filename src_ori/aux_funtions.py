@@ -1,43 +1,16 @@
 """
-Auxiliary Functions Module
-===========================
-
-This module provides auxiliary mathematical functions for atmospheric modeling,
-including interpolation routines and numerical utilities.
-
-Functions
----------
-pchip_1d : Monotone PCHIP (Piecewise Cubic Hermite Interpolating Polynomial) interpolation
-
-Notes
------
-PCHIP Interpolation:
-    PCHIP is a shape-preserving cubic interpolation method that:
-    - Preserves monotonicity in the data
-    - Has continuous first derivatives
-    - Produces smooth curves without overshooting
-    - Is particularly useful for interpolating physical quantities (T, P, abundances)
-      where non-physical oscillations must be avoided
-
-The implementation follows the Fritsch-Carlson monotonicity-preserving algorithm,
-similar to scipy.interpolate.PchipInterpolator.
-
-References
-----------
-Fritsch, F. N., and Carlson, R. E. (1980).
-"Monotone Piecewise Cubic Interpolation."
-SIAM Journal on Numerical Analysis, 17(2), 238-246.
+aux_functions.py
 """
 
+import jax
 import jax.numpy as jnp
 
 def _pchip_slopes(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     """
-    Compute PCHIP (monotone cubic) slopes at interpolation nodes.
+    Compute slopes for PCHIP interpolation.
 
-    This is an internal helper function that computes the derivatives (slopes)
-    at each node such that the resulting cubic interpolant preserves monotonicity.
-    Uses the Fritsch-Carlson algorithm with SciPy-style endpoint formulas.
+    This is a helper function for `pchip_1d` that computes slopes at each
+    data point, ensuring the interpolation is shape-preserving (monotonic).
 
     Parameters
     ----------
@@ -50,24 +23,6 @@ def _pchip_slopes(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     -------
     jnp.ndarray
         Slopes (derivatives) at each node (N,).
-
-    Notes
-    -----
-    For N = 2: Returns constant slopes equal to the secant.
-
-    For N >= 3:
-        - Interior slopes: Uses weighted harmonic mean of adjacent secants
-          when they have the same sign (monotone region). Sets slope to zero
-          at local extrema (sign change in secants).
-        - Endpoint slopes: Uses one-sided formulas with limiting to prevent
-          overshoot, following SciPy's PchipInterpolator implementation.
-
-    The harmonic mean weighting ensures that the interpolant is monotone
-    between nodes where the data is monotone.
-
-    References
-    ----------
-    Fritsch & Carlson (1980), "Monotone Piecewise Cubic Interpolation"
     """
     x = jnp.asarray(x)
     y = jnp.asarray(y)
@@ -79,9 +34,7 @@ def _pchip_slopes(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     delta = jnp.diff(y) / h
 
     def slopes_N2():
-        m = jnp.empty_like(y)
-        m = m.at[0].set(delta[0])
-        m = m.at[1].set(delta[0])
+        m = jnp.full_like(y, delta[0])
         return m
 
     def slopes_Nge3():
@@ -130,63 +83,24 @@ def _pchip_slopes(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
 def pchip_1d(x: jnp.ndarray,
              x_nodes: jnp.ndarray,
              y_nodes: jnp.ndarray) -> jnp.ndarray:
-    """
-    Perform monotone PCHIP (Piecewise Cubic Hermite Interpolating Polynomial) interpolation.
+    """Piecewise Cubic Hermite Interpolating Polynomial (PCHIP).
 
-    Interpolates 1D data using shape-preserving cubic Hermite polynomials.
-    The method preserves monotonicity in the data and produces smooth curves
-    without overshooting. Values outside the node range are clipped to the
-    boundary values.
+    Provides a 1D monotonic cubic interpolation. Values outside the node
+    range are clipped to the boundary values.
 
     Parameters
     ----------
     x : jnp.ndarray
-        Evaluation points where interpolated values are desired.
-        Can have any shape (...,).
+        The x-coordinates at which to evaluate the interpolated values.
     x_nodes : jnp.ndarray
-        Node positions (knot points) (N,). Must be sorted in ascending order.
-        These define the interpolation grid.
+        1D array of data point x-coordinates, must be sorted.
     y_nodes : jnp.ndarray
-        Function values at the nodes (N,).
+        1D array of data point y-coordinates, same length as `x_nodes`.
 
     Returns
     -------
     jnp.ndarray
-        Interpolated values at evaluation points x.
-        Has the same shape as x.
-
-    Notes
-    -----
-    Algorithm:
-        1. Compute monotone-preserving slopes at each node using _pchip_slopes
-        2. For each evaluation point, find the interval [x_i, x_{i+1}] containing it
-        3. Evaluate the cubic Hermite polynomial on that interval
-
-    The cubic Hermite basis functions are:
-        h00(t) = 2t³ - 3t² + 1
-        h10(t) = t³ - 2t² + t
-        h01(t) = -2t³ + 3t²
-        h11(t) = t³ - t²
-    where t = (x - x_i) / (x_{i+1} - x_i).
-
-    The interpolant is:
-        y(x) = h00(t)·y_i + h10(t)·h·m_i + h01(t)·y_{i+1} + h11(t)·h·m_{i+1}
-    where h = x_{i+1} - x_i and m are the PCHIP slopes.
-
-    Extrapolation:
-        Values of x outside [x_nodes[0], x_nodes[-1]] are clipped to the boundaries,
-        effectively using constant extrapolation.
-
-    Examples
-    --------
-    >>> x_nodes = jnp.array([0.0, 1.0, 2.0, 3.0])
-    >>> y_nodes = jnp.array([0.0, 1.0, 0.5, 2.0])
-    >>> x_eval = jnp.linspace(0, 3, 100)
-    >>> y_interp = pchip_1d(x_eval, x_nodes, y_nodes)
-
-    See Also
-    --------
-    _pchip_slopes : Compute the monotone-preserving slopes
+        The interpolated values, same shape as `x`.
     """
     x = jnp.asarray(x)
     x_nodes = jnp.asarray(x_nodes)
@@ -220,3 +134,53 @@ def pchip_1d(x: jnp.ndarray,
 
     y = h00 * y0 + h10 * h * m0 + h01 * y1 + h11 * h * m1
     return y
+
+
+def latin_hypercube(
+    key: jax.Array,
+    n_samples: int,
+    n_dim: int,
+    *,
+    scramble: bool = True,
+    dtype=jnp.float32,
+) -> tuple[jnp.ndarray, jax.Array]:
+    """Generate Latin hypercube samples in [0, 1).
+
+    Parameters
+    ----------
+    key : jax.Array
+        PRNG key.
+    n_samples : int
+        Number of samples to generate.
+    n_dim : int
+        Number of dimensions for each sample.
+    scramble : bool, default=True
+        If True, permutes strata assignment to reduce alignment.
+    dtype : dtype, default=jax.numpy.float32
+        Output dtype.
+
+    Returns
+    -------
+    tuple[jax.numpy.ndarray, jax.Array]
+        A tuple containing the generated samples of shape `(n_samples, n_dim)`
+        and the updated PRNG key.
+    """
+    dtype = jnp.dtype(dtype)
+    key, key_u, key_perm = jax.random.split(key, 3)
+
+    base = (
+        jnp.arange(n_samples, dtype=dtype)[:, None]
+        + jax.random.uniform(key_u, (n_samples, n_dim), dtype=dtype)
+    ) / jnp.asarray(n_samples, dtype=dtype)
+
+    if not scramble:
+        return base, key
+
+    perm_keys = jax.random.split(key_perm, n_dim)
+
+    def _permute_one(col: jnp.ndarray, k: jax.Array) -> jnp.ndarray:
+        perm = jax.random.permutation(k, n_samples)
+        return col[perm]
+
+    cols = jax.vmap(_permute_one, in_axes=(0, 0))(base.T, perm_keys)  # (n_dim, n_samples)
+    return cols.T, key

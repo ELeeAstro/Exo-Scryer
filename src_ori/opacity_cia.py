@@ -1,36 +1,6 @@
 """
 opacity_cia.py
-==============
-
-Overview:
-    Collision-induced absorption (CIA) opacity contribution for the forward
-    model.
-
-    This module interpolates CIA cross-sections from `build_opacities` to the
-    layer temperature structure and combines them with per-layer number density
-    and species mixing ratios to produce a mass opacity (cm^2 g^-1) on the
-    forward-model wavelength grid.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
-
-Usage:
-    CIA opacity uses the same wavelength grid as the forward model. During a
-    forward-model call, pass the shared `state` dictionary to
-    `compute_cia_opacity(state, params)` to obtain the CIA contribution.
-
-Key Functions:
-    - `compute_cia_opacity`: Computes CIA opacity in cm^2 g^-1.
-    - `_interpolate_sigma`: Interpolates (log10) cross-sections on log10(T).
-    - `_compute_pair_weight`: Computes per-layer CIA pair weights from VMRs.
-    - `zero_cia_opacity`: Convenience helper returning an all-zero array.
-
-Notes:
-    CIA species names are expected in `A-B` form (e.g., `H2-He`) where the weight
-    is `VMR[A] * VMR[B]` and normalization uses `nd^2 / rho`. The H- continuum is
-    handled in `opacity_special.py`.
+==================
 """
 
 from typing import Dict
@@ -46,39 +16,38 @@ def zero_cia_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarra
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
-        State dictionary containing `p_lay` and `wl` to determine output shape.
-    params : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
+        State dictionary containing scalar entries `nlay` (number of layers)
+        and `nwl` (number of wavelengths).
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         Array of zeros with shape `(nlay, nwl)`.
     """
-    layer_pressures = state["p_lay"]
-    wavelengths = state["wl"]
-    layer_count = jnp.size(layer_pressures)
-    wavelength_count = jnp.size(wavelengths)
-    return jnp.zeros((layer_count, wavelength_count))
+    # Use shape directly without jnp.size() for JIT compatibility
+    shape = (state["nlay"], state["nwl"])
+    return jnp.zeros(shape)
 
 
 def _interpolate_sigma(layer_temperatures: jnp.ndarray) -> jnp.ndarray:
     """Interpolate CIA cross-sections to layer temperatures.
 
-    Performs linear interpolation in log10(T) using per-species temperature
-    grids. Cross-sections are stored in log10 space in the registry and
-    converted back to linear space after interpolation.
-
     Parameters
     ----------
-    layer_temperatures : jax.numpy.ndarray, shape `(nlay,)`
+    layer_temperatures : jnp.ndarray, shape `(nlay,)`
         Layer temperatures in K.
 
     Returns
     -------
-    jax.numpy.ndarray
-        Cross-sections in linear space with shape `(nspecies, nlay, nwl)`.
+    jnp.ndarray
+        CIA cross-sections in linear space with shape `(nspecies, nlay, nwl)`.
+
+        The cross-sections are expected to be in units of
+        `cm^5 molecule^-2` (or an equivalent pair-absorption unit) so that
+        `nd_lay**2 * sigma / rho_lay` yields a mass opacity in `cm^2 g^-1`.
     """
     sigma_cube = XS.cia_sigma_cube()
     temperature_grids = XS.cia_temperature_grids()
@@ -91,15 +60,16 @@ def _interpolate_sigma(layer_temperatures: jnp.ndarray) -> jnp.ndarray:
 
         Parameters
         ----------
-        sigma_2d : jax.numpy.ndarray
-            Log10 cross-sections with shape `(nT, nwl)`.
-        temp_grid : jax.numpy.ndarray
+        sigma_2d : jnp.ndarray
+            Log10 CIA cross-sections with shape `(nT, nwl)`.
+        temp_grid : jnp.ndarray
             Temperature grid (K) with shape `(nT,)`.
 
         Returns
         -------
-        jax.numpy.ndarray
-            Log10 cross-sections interpolated to layers with shape `(nlay, nwl)`.
+        jnp.ndarray
+            Log10 cross-sections interpolated to `layer_temperatures` with shape
+            `(nlay, nwl)`.
         """
         # sigma_2d: (n_temp, n_wavelength)
         # temp_grid: (n_temp,)
@@ -145,22 +115,16 @@ def _compute_pair_weight(
     ----------
     name : str
         CIA species name in `A-B` form (e.g., `H2-He`).
-    layer_count : int
+    layer_count : int-like
         Number of atmospheric layers (`nlay`).
-    layer_vmr : dict[str, jax.numpy.ndarray]
+    layer_vmr : dict[str, jnp.ndarray]
         Mapping from species name to VMR values (scalar or `(nlay,)`).
 
     Returns
     -------
-    jax.numpy.ndarray
-        Per-layer weight array with shape `(nlay,)`.
-
-    Raises
-    ------
-    ValueError
-        If `name` is not in `A-B` format.
-    KeyError
-        If required species keys are missing from `layer_vmr`.
+    jnp.ndarray
+        Per-layer pair weight with shape `(nlay,)`, equal to
+        `VMR[A] * VMR[B]` after broadcasting any scalar VMRs to `(nlay,)`.
     """
     name_clean = name.strip()
 
@@ -170,8 +134,9 @@ def _compute_pair_weight(
         raise ValueError(f"CIA species '{name}' must be in 'A-B' format")
 
     species_a, species_b = parts[0], parts[1]
-    ratio_a = jnp.asarray(layer_vmr[species_a])
-    ratio_b = jnp.asarray(layer_vmr[species_b])
+    # VMR values are already JAX arrays, no need to wrap
+    ratio_a = layer_vmr[species_a]
+    ratio_b = layer_vmr[species_b]
     ratio_a = jnp.broadcast_to(ratio_a, (layer_count,))
     ratio_b = jnp.broadcast_to(ratio_b, (layer_count,))
     return ratio_a * ratio_b
@@ -183,37 +148,34 @@ def compute_cia_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nda
 
     Parameters
     ----------
-    state : dict[str, jax.numpy.ndarray]
+    state : dict[str, jnp.ndarray]
         State dictionary with at least:
 
         - `nlay` : int-like
-            Number of layers.
-        - `wl` : jax.numpy.ndarray, shape `(nwl,)`
-            Forward-model wavelength grid.
-        - `T_lay` : jax.numpy.ndarray, shape `(nlay,)`
+            Number of layers (Python int or a 0-d JAX array).
+        - `nwl` : int-like
+            Number of wavelengths (Python int or a 0-d JAX array). Only used to
+            size the output when no CIA species are enabled.
+        - `wl` : jnp.ndarray, shape `(nwl,)`
+            Forward-model wavelength grid (typically microns).
+        - `T_lay` : jnp.ndarray, shape `(nlay,)`
             Layer temperatures in K.
-        - `nd_lay` : jax.numpy.ndarray, shape `(nlay,)`
-            Layer number density.
-        - `rho_lay` : jax.numpy.ndarray, shape `(nlay,)`
-            Layer mass density.
+        - `nd_lay` : jnp.ndarray, shape `(nlay,)`
+            Layer number density in `molecule cm^-3`.
+        - `rho_lay` : jnp.ndarray, shape `(nlay,)`
+            Layer mass density in `g cm^-3`.
         - `vmr_lay` : Mapping[str, Any]
             Mapping from species name to VMR values (scalar or `(nlay,)`).
-    params : dict[str, jax.numpy.ndarray]
+    params : dict[str, jnp.ndarray]
         Unused; kept for API compatibility.
 
     Returns
     -------
-    jax.numpy.ndarray
+    jnp.ndarray
         CIA opacity in cm^2 g^-1 with shape `(nlay, nwl)`.
-
-    Raises
-    ------
-    ValueError
-        If the CIA wavelength grid does not match `state["wl"]`.
-    KeyError
-        If a required species name is missing from `state["vmr_lay"]`.
     """
-    layer_count = int(state["nlay"])
+    # Use JAX array directly without int() for JIT compatibility
+    layer_count = state["nlay"]
     wavelengths = state["wl"]
     layer_temperatures = state["T_lay"]
     number_density = state["nd_lay"]   # (nlay,)

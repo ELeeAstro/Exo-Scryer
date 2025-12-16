@@ -1,14 +1,6 @@
 """
 data_constants.py
 =================
-
-Overview:
-    TODO: Describe the purpose and responsibilities of this module.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 R = 8.31446261815324e7

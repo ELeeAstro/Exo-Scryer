@@ -1,40 +1,6 @@
 """
 ck_mix_RORR.py
 ==============
-
-Overview
---------
-Random Overlap with Ranked Reordering (RORR) mixing for correlated-k tables.
-
-This module implements the RORR algorithm for mixing absorption cross-sections
-from multiple atmospheric species while preserving correlation structure in
-g-space (cumulative probability space).
-
-The RORR method creates a Random Overlap Method (ROM) matrix at each mixing
-step, sorts by absorption coefficient magnitude, and interpolates back to the
-standard g-grid. This approach balances accuracy with computational efficiency
-for atmospheric radiative transfer.
-
-Reference
----------
-Lacis, A. A., & Oinas, V. (1991). A description of the correlated k distribution
-method for modeling nongray gaseous absorption, thermal emission, and multiple
-scattering in vertically inhomogeneous atmospheres. Journal of Geophysical
-Research: Atmospheres, 96(D5), 9027-9063.
-
-Key Features
-------------
-- Sequential species mixing with lax.scan for JAX efficiency
-- Pre-computed ROM weights to avoid redundant calculations in vmap
-- Optimized sorting using direct pair sorting instead of argsort
-- Skip optimization for species with negligible absorption
-- Full JAX/XLA compatibility for GPU/TPU acceleration
-
-Notes
------
-- All operations are JAX-compatible and JIT-compilable
-- ROM weights are pre-computed outside the vmap loop for ~20-30% speedup
-- Uses direct pair sorting for ~5-10% speedup over argsort + fancy indexing
 """
 
 import jax
@@ -49,51 +15,30 @@ def _rom_mix_band(
     base_weights: jnp.ndarray,
     rom_weights: jnp.ndarray,
 ) -> jnp.ndarray:
-    """
-    Mix multiple species for a single (layer, wavelength) using RORR algorithm.
+    """Mix multiple species at one (layer, wavelength) using RORR.
 
-    Implements the Random Overlap with Ranked Reordering (RORR) method for
-    mixing correlated-k tables. Species are sequentially added, with each step
-    creating a ROM (Random Overlap Method) matrix, sorting by k-value, and
-    interpolating back to the standard g-grid.
+    Implements random overlap with ranked reordering (RORR): sequentially add
+    species by forming the ROM matrix, sorting by k, and interpolating back to
+    the standard g-grid.
 
     Parameters
     ----------
     sigma_stack : jnp.ndarray
-        Cross-sections for all species at this (layer, wavelength)
-        Shape: (n_species, n_g)
+        Cross-sections for all species at this (layer, wavelength),
+        shape `(n_species, n_g)`.
     vmr_layer : jnp.ndarray
-        Volume mixing ratios for each species at this layer
-        Shape: (n_species,)
+        Volume mixing ratios for each species at this layer, shape `(n_species,)`.
     g_points : jnp.ndarray
-        Standard g-points for interpolation, shape (n_g,)
+        Standard g-points for interpolation, shape `(n_g,)`.
     base_weights : jnp.ndarray
-        Quadrature weights for each g-point, shape (n_g,)
+        Quadrature weights for each g-point, shape `(n_g,)`.
     rom_weights : jnp.ndarray
-        Pre-computed ROM weights (outer product of base_weights), shape (n_g^2,)
+        Pre-computed ROM weights (outer product of `base_weights`), shape `(n_g**2,)`.
 
     Returns
     -------
     jnp.ndarray
-        Mixed cross-section at this (layer, wavelength), shape (n_g,)
-
-    Notes
-    -----
-    - Algorithm follows Lacis & Oinas (1991) RORR method
-    - Species with negligible cross-section (< 1e-50) are skipped for efficiency
-    - ROM matrix is flattened, sorted, and interpolated back to g-grid
-    - Returns cross-section scaled by total VMR (not normalized)
-    - rom_weights is pre-computed to avoid redundant calculations in vmap
-
-    Algorithm Steps
-    ---------------
-    1. Initialize with first species: cs_mix = sigma[0] * vmr[0]
-    2. For each additional species:
-        a. Create ROM matrix: k[i,j] = (cs_mix[i] + vmr*sigma[j]) / vmr_tot
-        b. Flatten and sort by k-value with corresponding weights
-        c. Compute cumulative g from sorted weights
-        d. Interpolate back to standard g-points
-    3. Return final mixed cross-section
+        Mixed cross-section at this (layer, wavelength), shape `(n_g,)`.
     """
     n_species = sigma_stack.shape[0]
     ng = sigma_stack.shape[-1]
@@ -167,55 +112,24 @@ def mix_k_tables_rorr(
     g_points: jnp.ndarray,
     base_weights: jnp.ndarray,
 ) -> jnp.ndarray:
-    """
-    Random overlap (RORR) mixing of correlated-k tables across all species.
-
-    Vectorized implementation that processes all (layer, wavelength) combinations
-    in parallel using JAX vmap. Each combination is mixed using the RORR algorithm.
+    """Mix correlated-k tables across species using RORR.
 
     Parameters
     ----------
     sigma_values : jnp.ndarray
-        Cross-sections for all species, shape (n_species, n_layers, n_wavelength, n_g)
+        Cross-sections for all species, shape `(n_species, n_layers, n_wavelength, n_g)`.
     mixing_ratios : jnp.ndarray
-        Volume mixing ratios, shape (n_species, n_layers) or (n_species,)
-        If 1D, will be broadcast across all layers
+        Volume mixing ratios, shape `(n_species, n_layers)` or `(n_species,)`.
+        If 1D, it is broadcast across layers.
     g_points : jnp.ndarray
-        Standard g-points for interpolation, shape (n_g,)
+        Standard g-points for interpolation, shape `(n_g,)`.
     base_weights : jnp.ndarray
-        Quadrature weights, shape (n_g,)
+        Quadrature weights, shape `(n_g,)`.
 
     Returns
     -------
     jnp.ndarray
-        Mixed cross-sections, shape (n_layers, n_wavelength, n_g)
-
-    Notes
-    -----
-    - Uses batched vmap over flattened (layer, wavelength) dimension for efficiency
-    - VMRs are per-layer, so they're repeated across wavelengths before mixing
-    - ROM weights pre-computed once and passed to all vmap calls for ~20-30% speedup
-    - Uses optimized reshape/repeat pattern for reduced memory allocations
-
-    Performance
-    -----------
-    Optimizations implemented:
-    - Pre-compute ROM weights ONCE (20-30% speedup)
-    - Direct pair sorting (5-10% speedup)
-    - Optimized log/pow operations (10-15% speedup)
-    - Efficient reshape/repeat (2-5% speedup)
-    Total expected speedup: 30-50% vs naive implementation
-
-    Examples
-    --------
-    >>> n_species, n_layers, n_wl, n_g = 6, 99, 1000, 16
-    >>> sigma = jnp.ones((n_species, n_layers, n_wl, n_g)) * 1e-20
-    >>> vmr = jnp.ones((n_species, n_layers)) * 1e-4
-    >>> g_pts = jnp.linspace(0, 1, n_g)
-    >>> weights = jnp.ones(n_g) / n_g
-    >>> mixed = mix_k_tables_rorr(sigma, vmr, g_pts, weights)
-    >>> mixed.shape
-    (99, 1000, 16)
+        Mixed cross-sections, shape `(n_layers, n_wavelength, n_g)`.
     """
     n_species, n_layers, n_wl, n_g = sigma_values.shape
     dtype = sigma_values.dtype
