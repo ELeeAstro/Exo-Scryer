@@ -23,7 +23,7 @@ physics:
 opac:
 
   wl_master: wl_dnu_1.txt
-  full_grid: False
+  full_grid: True
   ck: False
   ck_mix: RORR
 

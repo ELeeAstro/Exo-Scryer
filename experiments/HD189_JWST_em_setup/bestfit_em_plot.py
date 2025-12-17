@@ -250,17 +250,22 @@ def plot_emission_band(config_path, outname="model_emission", max_samples=2000, 
             R_s = float(theta["R_s"])
             planet_flux_samples[i] = _recover_planet_flux(hires_samples[i], stellar_flux_np, R_p, R_s)
 
-    q_lo, q_med, q_hi = np.percentile(model_samples, [2.5, 50, 97.5], axis=0)
-    h_lo, h_med, h_hi = np.percentile(hires_samples, [2.5, 50, 97.5], axis=0)
+    # Convert to percent
+    model_samples *= 100.0
+    hires_samples *= 100.0
+
+    # Use 1σ intervals (16th-84th percentiles) to match bestfit_plot.py style
+    q_lo, q_med, q_hi = np.percentile(model_samples, [16, 50, 84], axis=0)
+    h_lo, h_med, h_hi = np.percentile(hires_samples, [16, 50, 84], axis=0)
 
     save_payload = {
         "lam": lam,
         "dlam": dlam,
-        "depth_p02_5": q_lo,
+        "depth_p16": q_lo,
         "depth_p50": q_med,
-        "depth_p97_5": q_hi,
+        "depth_p84": q_hi,
         "lam_hires": hires,
-        "depth_hi_p02_5": h_lo,
+        "depth_hi_p16": h_lo,
         "depth_hi_p50": h_med,
         "depth_hi_p97_5": h_hi,
         "draw_idx": idx,
@@ -268,16 +273,17 @@ def plot_emission_band(config_path, outname="model_emission", max_samples=2000, 
 
     pf_lo = pf_med = pf_hi = Tb_med = Tb_lo = Tb_hi = None
     if planet_flux_samples is not None:
-        pf_lo, pf_med, pf_hi = np.percentile(planet_flux_samples, [2.5, 50, 97.5], axis=0)
+        # Use 1σ intervals to match bestfit_plot.py style
+        pf_lo, pf_med, pf_hi = np.percentile(planet_flux_samples, [16, 50, 84], axis=0)
         Tb_samples = _flux_to_brightness_temperature(planet_flux_samples, hires)
-        Tb_lo, Tb_med, Tb_hi = np.percentile(Tb_samples, [2.5, 50, 97.5], axis=0)
+        Tb_lo, Tb_med, Tb_hi = np.percentile(Tb_samples, [16, 50, 84], axis=0)
         save_payload.update(
-            planet_flux_p02_5=pf_lo,
+            planet_flux_p16=pf_lo,
             planet_flux_p50=pf_med,
-            planet_flux_p97_5=pf_hi,
-            Tb_p02_5=Tb_lo,
+            planet_flux_p84=pf_hi,
+            Tb_p16=Tb_lo,
             Tb_p50=Tb_med,
-            Tb_p97_5=Tb_hi,
+            Tb_p84=Tb_hi,
         )
         R_p_med = float(np.median(R_p_draws[idx]))
         R_s_med = float(np.median(R_s_draws[idx]))
@@ -304,60 +310,178 @@ def plot_emission_band(config_path, outname="model_emission", max_samples=2000, 
 
     np.savez_compressed(exp_dir / f"{outname}_quantiles.npz", **save_payload)
 
-    sns.set(style="whitegrid")
+    # Match bestfit_plot.py style
     palette = sns.color_palette("colorblind")
 
-    fig_ratio, ax_ratio = plt.subplots(figsize=(7, 5))
-    ax_ratio.plot(hires, h_med, color=palette[0], lw=1, alpha=0.7, label="Median (hi-res)")
-    ax_ratio.fill_between(lam, q_lo, q_hi, alpha=0.3, color=palette[1], label="95% credible band")
-    ax_ratio.plot(lam, q_med, color=palette[2], lw=2, label="Median model")
+    # Flux ratio plot
+    fig_ratio, ax_ratio = plt.subplots(figsize=(8, 4.5))
+    ax_ratio.plot(hires, h_med, lw=1.0, alpha=0.7, label="Median (hi-res)", color=palette[4])
+    ax_ratio.fill_between(lam, q_lo, q_hi, alpha=0.3, color=palette[1])
+    ax_ratio.plot(lam, q_med, lw=2, label="Median", color=palette[1])
     ax_ratio.errorbar(
         lam,
-        y_obs,
-        yerr=dy_obs,
+        y_obs * 100.0,
+        yerr=dy_obs * 100.0 if dy_obs is not None else None,
         xerr=dlam,
         fmt="o",
-        color=palette[3],
-        capsize=3,
-        label="Data",
+        ms=3,
+        lw=1,
+        alpha=0.9,
+        label="Observed",
+        color=palette[0],
+        ecolor=palette[0],
+        capsize=2,
     )
     ax_ratio.set_xscale("log")
-    ax_ratio.set_ylabel("F_p / F_s")
-    ax_ratio.set_xlabel("Wavelength (micron)")
+    ax_ratio.set_xlabel("Wavelength [µm]", fontsize=14)
+    ax_ratio.set_ylabel(r"$F_{\rm p}/F_{\star}$ [%]", fontsize=14)
+    tick_locs = np.array([1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 12.0])
+    ax_ratio.set_xticks(tick_locs)
+    ax_ratio.set_xticklabels([f"{t:g}" for t in tick_locs], fontsize=12)
+    ax_ratio.tick_params(axis="y", labelsize=12)
+    ax_ratio.set_xlim(1.0, 12.0)
+    ax_ratio.grid(False)
     ax_ratio.legend()
     fig_ratio.tight_layout()
-    fig_ratio.savefig(exp_dir / f"{outname}.png", dpi=200)
+    fig_ratio.savefig(exp_dir / f"{outname}.png", dpi=300)
     fig_ratio.savefig(exp_dir / f"{outname}.pdf")
+
+    # Flux ratio zoom plot (7-12 µm)
+    zoom_min, zoom_max = 7.0, 12.0
+    hi_mask = (hires >= zoom_min) & (hires <= zoom_max)
+    bin_mask = (lam >= zoom_min) & (lam <= zoom_max)
+    fig_ratio_zoom, ax_ratio_zoom = plt.subplots(figsize=(5, 5))
+    if np.any(hi_mask):
+        ax_ratio_zoom.plot(
+            hires[hi_mask],
+            h_med[hi_mask],
+            lw=1.0,
+            alpha=0.7,
+            label="Median (hi-res)",
+            color=palette[4],
+        )
+    if np.any(bin_mask):
+        ax_ratio_zoom.fill_between(
+            lam[bin_mask],
+            q_lo[bin_mask],
+            q_hi[bin_mask],
+            alpha=0.3,
+            color=palette[1],
+        )
+        ax_ratio_zoom.plot(
+            lam[bin_mask],
+            q_med[bin_mask],
+            lw=2,
+            label="Median",
+            color=palette[1],
+        )
+        ax_ratio_zoom.errorbar(
+            lam[bin_mask],
+            y_obs[bin_mask] * 100.0,
+            xerr=dlam[bin_mask],
+            yerr=(dy_obs[bin_mask] * 100.0) if dy_obs is not None else None,
+            fmt="o",
+            ms=3,
+            lw=1,
+            alpha=0.9,
+            label="Observed",
+            color=palette[0],
+            ecolor=palette[0],
+            capsize=2,
+        )
+    ax_ratio_zoom.set_xlabel("Wavelength [µm]", fontsize=14)
+    ax_ratio_zoom.set_ylabel(r"$F_{\rm p}/F_{\star}$ [%]", fontsize=14)
+    ax_ratio_zoom.set_xlim(zoom_min, zoom_max)
+    ax_ratio_zoom.tick_params(axis="x", labelsize=12)
+    ax_ratio_zoom.tick_params(axis="y", labelsize=12)
+    ax_ratio_zoom.legend()
+    fig_ratio_zoom.tight_layout()
+    fig_ratio_zoom.savefig(exp_dir / f"{outname}_zoom.pdf")
+    fig_ratio_zoom.savefig(exp_dir / f"{outname}_zoom.png", dpi=300)
 
     if planet_flux_samples is not None and pf_lo is not None:
         # Planet flux figure
-        fig_flux, ax_flux = plt.subplots(figsize=(7, 5))
-        ax_flux.fill_between(hires, pf_lo, pf_hi, alpha=0.2, color=palette[4], label="Planet flux 95%")
-        ax_flux.plot(hires, pf_med, color=palette[4], lw=2, label="Planet flux median")
+        fig_flux, ax_flux = plt.subplots(figsize=(8, 4.5))
+        ax_flux.plot(hires, pf_med, lw=1.0, alpha=0.7, label="Median (hi-res)", color=palette[4])
+        ax_flux.fill_between(hires, pf_lo, pf_hi, alpha=0.3, color=palette[1])
         if obs_flux is not None:
             ax_flux.errorbar(
                 lam,
                 obs_flux,
                 yerr=obs_flux_err,
                 xerr=dlam,
-                fmt="s",
-                color=palette[5],
-                capsize=3,
-                label="Observed flux",
+                fmt="o",
+                ms=3,
+                lw=1,
+                alpha=0.9,
+                label="Observed",
+                color=palette[0],
+                ecolor=palette[0],
+                capsize=2,
             )
         ax_flux.set_xscale("log")
         ax_flux.set_yscale("log")
-        ax_flux.set_xlabel("Wavelength (micron)")
-        ax_flux.set_ylabel("Planet flux [cgs]")
+        ax_flux.set_xlabel("Wavelength [µm]", fontsize=14)
+        ax_flux.set_ylabel("Planet flux [cgs]", fontsize=14)
+        tick_locs = np.array([1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 12.0])
+        ax_flux.set_xticks(tick_locs)
+        ax_flux.set_xticklabels([f"{t:g}" for t in tick_locs], fontsize=12)
+        ax_flux.tick_params(axis="y", labelsize=12)
+        ax_flux.set_xlim(1.0, 12.0)
+        ax_flux.grid(False)
         ax_flux.legend()
         fig_flux.tight_layout()
-        fig_flux.savefig(exp_dir / f"{outname}_planet_flux.png", dpi=200)
+        fig_flux.savefig(exp_dir / f"{outname}_planet_flux.png", dpi=300)
         fig_flux.savefig(exp_dir / f"{outname}_planet_flux.pdf")
 
+        # Planet flux zoom plot (7-12 µm)
+        fig_flux_zoom, ax_flux_zoom = plt.subplots(figsize=(5, 5))
+        if np.any(hi_mask):
+            ax_flux_zoom.plot(
+                hires[hi_mask],
+                pf_med[hi_mask],
+                lw=1.0,
+                alpha=0.7,
+                label="Median (hi-res)",
+                color=palette[4],
+            )
+            ax_flux_zoom.fill_between(
+                hires[hi_mask],
+                pf_lo[hi_mask],
+                pf_hi[hi_mask],
+                alpha=0.3,
+                color=palette[1],
+            )
+        if np.any(bin_mask) and obs_flux is not None:
+            ax_flux_zoom.errorbar(
+                lam[bin_mask],
+                obs_flux[bin_mask],
+                xerr=dlam[bin_mask],
+                yerr=obs_flux_err[bin_mask] if obs_flux_err is not None else None,
+                fmt="o",
+                ms=3,
+                lw=1,
+                alpha=0.9,
+                label="Observed",
+                color=palette[0],
+                ecolor=palette[0],
+                capsize=2,
+            )
+        ax_flux_zoom.set_yscale("log")
+        ax_flux_zoom.set_xlabel("Wavelength [µm]", fontsize=14)
+        ax_flux_zoom.set_ylabel("Planet flux [cgs]", fontsize=14)
+        ax_flux_zoom.set_xlim(zoom_min, zoom_max)
+        ax_flux_zoom.tick_params(axis="x", labelsize=12)
+        ax_flux_zoom.tick_params(axis="y", labelsize=12)
+        ax_flux_zoom.legend()
+        fig_flux_zoom.tight_layout()
+        fig_flux_zoom.savefig(exp_dir / f"{outname}_planet_flux_zoom.pdf")
+        fig_flux_zoom.savefig(exp_dir / f"{outname}_planet_flux_zoom.png", dpi=300)
+
         # Brightness temperature figure
-        fig_tb, ax_tb = plt.subplots(figsize=(7, 5))
-        ax_tb.fill_between(hires, Tb_lo, Tb_hi, alpha=0.2, color=palette[6], label="T_b 95%")
-        ax_tb.plot(hires, Tb_med, color=palette[6], lw=2, label="Brightness T median")
+        fig_tb, ax_tb = plt.subplots(figsize=(8, 4.5))
+        ax_tb.plot(hires, Tb_med, lw=1.0, alpha=0.7, label="Median (hi-res)", color=palette[4])
+        ax_tb.fill_between(hires, Tb_lo, Tb_hi, alpha=0.3, color=palette[1])
         if Tb_obs is not None and Tb_obs_lo is not None and Tb_obs_hi is not None:
             Tb_err = np.vstack(
                 (
@@ -371,17 +495,78 @@ def plot_emission_band(config_path, outname="model_emission", max_samples=2000, 
                 yerr=Tb_err,
                 xerr=dlam,
                 fmt="o",
-                color=palette[7],
-                capsize=3,
-                label="Observed T_b",
+                ms=3,
+                lw=1,
+                alpha=0.9,
+                label="Observed",
+                color=palette[0],
+                ecolor=palette[0],
+                capsize=2,
             )
         ax_tb.set_xscale("log")
-        ax_tb.set_xlabel("Wavelength (micron)")
-        ax_tb.set_ylabel("Brightness temperature [K]")
+        ax_tb.set_xlabel("Wavelength [µm]", fontsize=14)
+        ax_tb.set_ylabel("Brightness temperature [K]", fontsize=14)
+        tick_locs = np.array([1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 12.0])
+        ax_tb.set_xticks(tick_locs)
+        ax_tb.set_xticklabels([f"{t:g}" for t in tick_locs], fontsize=12)
+        ax_tb.tick_params(axis="y", labelsize=12)
+        ax_tb.set_xlim(1.0, 12.0)
+        ax_tb.grid(False)
         ax_tb.legend()
         fig_tb.tight_layout()
-        fig_tb.savefig(exp_dir / f"{outname}_brightness_temperature.png", dpi=200)
+        fig_tb.savefig(exp_dir / f"{outname}_brightness_temperature.png", dpi=300)
         fig_tb.savefig(exp_dir / f"{outname}_brightness_temperature.pdf")
+
+        # Brightness temperature zoom plot (7-12 µm)
+        fig_tb_zoom, ax_tb_zoom = plt.subplots(figsize=(5, 5))
+        if np.any(hi_mask):
+            ax_tb_zoom.plot(
+                hires[hi_mask],
+                Tb_med[hi_mask],
+                lw=1.0,
+                alpha=0.7,
+                label="Median (hi-res)",
+                color=palette[4],
+            )
+            ax_tb_zoom.fill_between(
+                hires[hi_mask],
+                Tb_lo[hi_mask],
+                Tb_hi[hi_mask],
+                alpha=0.3,
+                color=palette[1],
+            )
+        if np.any(bin_mask) and Tb_obs is not None:
+            Tb_err_zoom = None
+            if Tb_obs_lo is not None and Tb_obs_hi is not None:
+                Tb_err_zoom = np.vstack(
+                    (
+                        Tb_obs[bin_mask] - Tb_obs_lo[bin_mask],
+                        Tb_obs_hi[bin_mask] - Tb_obs[bin_mask],
+                    )
+                )
+            ax_tb_zoom.errorbar(
+                lam[bin_mask],
+                Tb_obs[bin_mask],
+                xerr=dlam[bin_mask],
+                yerr=Tb_err_zoom,
+                fmt="o",
+                ms=3,
+                lw=1,
+                alpha=0.9,
+                label="Observed",
+                color=palette[0],
+                ecolor=palette[0],
+                capsize=2,
+            )
+        ax_tb_zoom.set_xlabel("Wavelength [µm]", fontsize=14)
+        ax_tb_zoom.set_ylabel("Brightness temperature [K]", fontsize=14)
+        ax_tb_zoom.set_xlim(zoom_min, zoom_max)
+        ax_tb_zoom.tick_params(axis="x", labelsize=12)
+        ax_tb_zoom.tick_params(axis="y", labelsize=12)
+        ax_tb_zoom.legend()
+        fig_tb_zoom.tight_layout()
+        fig_tb_zoom.savefig(exp_dir / f"{outname}_brightness_temperature_zoom.pdf")
+        fig_tb_zoom.savefig(exp_dir / f"{outname}_brightness_temperature_zoom.png", dpi=300)
 
     if show_plot:
         plt.show()
