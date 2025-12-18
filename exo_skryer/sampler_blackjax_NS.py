@@ -1,11 +1,6 @@
 """
 sampler_blackjax_NS.py
 ======================
-
-Minimal BlackJAX nested-sampling scaffold:
-- build priors from cfg.params (delta, uniform, normal, lognormal, beta, gamma, etc.)
-- Gaussian log-likelihood via prep.fm and observed data
-- run blackjax.nss and return samples/evidence info
 """
 
 from __future__ import annotations

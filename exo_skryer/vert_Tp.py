@@ -1,5 +1,6 @@
 """
-TODO: Module-level docstring placeholder.
+vert_Tp.py
+==========
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def hopf_function(tau: jnp.ndarray) -> jnp.ndarray:
 
     Returns
     -------
-    `~jax.numpy.ndarray`
+    hopf : `~jax.numpy.ndarray`
         Hopf function value at the given optical depth.
     """
     tau = jnp.asarray(tau)
@@ -73,17 +74,20 @@ def isothermal(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.
 
     Parameters
     ----------
-    p_lev : jnp.ndarray
-        Pressure at atmospheric levels (nlev,).
-    params : dict[str, jnp.ndarray]
-        Dictionary containing 'T_iso' for the isothermal temperature in K.
+    p_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Pressure at atmospheric levels.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `T_iso` : float
+            Isothermal temperature in Kelvin.
 
     Returns
     -------
-    T_lev : `~jax.numpy.ndarray`
-        Temperature at levels (nlev,) [K].
-    T_lay : `~jax.numpy.ndarray`
-        Temperature at layer midpoints (nlev-1,) [K].
+    T_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Temperature at levels in Kelvin.
+    T_lay : `~jax.numpy.ndarray`, shape (nlev-1,)
+        Temperature at layer midpoints in Kelvin.
     """
     nlev = jnp.size(p_lev)
     # Parameter values are already JAX arrays, no need to wrap
@@ -100,17 +104,20 @@ def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
 
     Parameters
     ----------
-    p_lev : `~jax.numpy.ndarray`
-        Pressure at atmospheric levels (nlev,).
-    params : dict[str, jnp.ndarray]
-        Dictionary containing 'T_iso' for the upper isothermal temperature.
+    p_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Pressure at atmospheric levels.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `T_iso` : float
+            Upper-atmosphere isothermal temperature in Kelvin.
 
     Returns
     -------
-    T_lev : `~jax.numpy.ndarray`
-        Temperature at levels (nlev,) [K].
-    T_lay : `~jax.numpy.ndarray`
-        Temperature at layer midpoints (nlev-1,) [K].
+    T_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Temperature at levels in Kelvin.
+    T_lay : `~jax.numpy.ndarray`, shape (nlev-1,)
+        Temperature at layer midpoints in Kelvin.
     """
     # Parameter values are already JAX arrays, no need to wrap
     T_iso = params["T_iso"]
@@ -130,20 +137,24 @@ def Milne(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarr
 
     Parameters
     ----------
-    p_lev : `~jax.numpy.ndarray`
-        Pressure at atmospheric levels (nlev,).
-    params : dict[str, jnp.ndarray]
-        Dictionary containing:
-        - 'log_10_g': Log10 of surface gravity [cm/s^2].
-        - 'T_int': Internal temperature [K].
-        - 'k_ir': Infrared opacity [cm^2/g].
+    p_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Pressure at atmospheric levels.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `log_10_g` : float
+            Log₁₀ surface gravity in cm s⁻².
+        - `T_int` : float
+            Internal temperature in Kelvin.
+        - `k_ir` : float
+            Infrared opacity in cm² g⁻¹.
 
     Returns
     -------
-    T_lev : `~jax.numpy.ndarray`
-        Temperature at levels (nlev,) [K].
-    T_lay : `~jax.numpy.ndarray`
-        Temperature at layer midpoints (nlev-1,) [K].
+    T_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Temperature at levels in Kelvin.
+    T_lay : `~jax.numpy.ndarray`, shape (nlev-1,)
+        Temperature at layer midpoints in Kelvin.
     """
     # Parameter values are already JAX arrays, no need to wrap
     g = 10.0**params["log_10_g"]
@@ -163,23 +174,30 @@ def Guillot(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
 
     Parameters
     ----------
-    p_lev : `~jax.numpy.ndarray`
-        Pressure at atmospheric levels (nlev,).
-    params : dict[str, jnp.ndarray]
-        Dictionary containing:
-        - 'T_int': Internal temperature [K].
-        - 'T_eq': Equilibrium temperature [K].
-        - 'log_10_k_ir': Log10 of infrared opacity [cm^2/g].
-        - 'log_10_gam_v': Log10 of the visible-to-IR opacity ratio.
-        - 'log_10_g': Log10 of surface gravity [cm/s^2].
-        - 'f_hem': Hemispheric redistribution factor.
+    p_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Pressure at atmospheric levels.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `T_int` : float
+            Internal temperature in Kelvin.
+        - `T_eq` : float
+            Equilibrium temperature in Kelvin.
+        - `log_10_k_ir` : float
+            Log₁₀ infrared opacity in cm² g⁻¹.
+        - `log_10_gam_v` : float
+            Log₁₀ visible-to-IR opacity ratio (dimensionless).
+        - `log_10_g` : float
+            Log₁₀ surface gravity in cm s⁻².
+        - `f_hem` : float
+            Hemispheric redistribution factor (dimensionless).
 
     Returns
     -------
-    T_lev : `~jax.numpy.ndarray`
-        Temperature at levels (nlev,) [K].
-    T_lay : `~jax.numpy.ndarray`
-        Temperature at layer midpoints (nlev-1,) [K].
+    T_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Temperature at levels in Kelvin.
+    T_lay : `~jax.numpy.ndarray`, shape (nlev-1,)
+        Temperature at layer midpoints in Kelvin.
     """
     # Parameter values are already JAX arrays, no need to wrap
     T_int = params["T_int"]
@@ -200,7 +218,7 @@ def Guillot(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
     T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
     return T_lev, T_lay
 
-def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray], ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Generate a Madhusudhan & Seager (2009) three-region T-P profile.
 
     This profile divides the atmosphere into three regions defined by
@@ -208,20 +226,24 @@ def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray], ) -> Tuple[jnp.n
 
     Parameters
     ----------
-    p_lev : `~jax.numpy.ndarray`
-        Pressure at atmospheric levels (nlev,).
-    params : dict[str, jnp.ndarray]
-        Dictionary containing:
-        - 'a1', 'a2': Slope parameters for the profile regions.
-        - 'log_10_P1', 'log_10_P2', 'log_10_P3': Transition pressures [bar].
-        - 'T_ref': Reference temperature at the top of the atmosphere [K].
+    p_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Pressure at atmospheric levels.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `a1`, `a2` : float
+            Shape/slope parameters controlling the inversion strength.
+        - `log_10_P1`, `log_10_P2`, `log_10_P3` : float
+            Transition pressures in bar (converted internally to linear pressure).
+        - `T_ref` : float
+            Reference temperature at the top of the atmosphere in Kelvin.
 
     Returns
     -------
-    T_lev : `~jax.numpy.ndarray`
-        Temperature at levels (nlev,) [K].
-    T_lay : `~jax.numpy.ndarray`
-        Temperature at layer midpoints (nlev-1,) [K].
+    T_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Temperature at levels in Kelvin.
+    T_lay : `~jax.numpy.ndarray`, shape (nlev-1,)
+        Temperature at layer midpoints in Kelvin.
     """
     p_lev = jnp.asarray(p_lev)
 
@@ -259,29 +281,35 @@ def MandS09(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray], ) -> Tuple[jnp.n
 
 
 def picket_fence(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Generate a Robinson & Catling (2012) picket fence T-P profile.
+    """Generate a Parmentier & Guillot (2014,2015) picket fence T-P profile.
 
     This profile uses a picket fence approximation for radiative transfer,
     treating opacity as a combination of discrete spectral bins.
 
     Parameters
     ----------
-    p_lev : `~jax.numpy.ndarray`
-        Pressure at atmospheric levels (nlev,).
-    params : dict[str, jnp.ndarray]
-        Dictionary containing:
-        - 'T_int', 'T_eq': Internal and equilibrium temperatures [K].
-        - 'log_10_k_ir', 'log_10_gam_v': Opacity parameters.
-        - 'log_10_R', 'Beta': Picket fence model parameters.
-        - 'log_10_g': Log10 of surface gravity [cm/s^2].
-        - 'f_hem': Hemispheric redistribution factor.
+    p_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Pressure at atmospheric levels.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `T_int`, `T_eq` : float
+            Internal and equilibrium temperatures in Kelvin.
+        - `log_10_k_ir`, `log_10_gam_v` : float
+            Log₁₀ infrared opacity (cm² g⁻¹) and log₁₀ visible-to-IR ratio.
+        - `log_10_R`, `Beta` : float
+            Picket-fence parameters (dimensionless).
+        - `log_10_g` : float
+            Log₁₀ surface gravity in cm s⁻².
+        - `f_hem` : float
+            Hemispheric redistribution factor (dimensionless).
 
     Returns
     -------
-    T_lev : `~jax.numpy.ndarray`
-        Temperature at levels (nlev,) [K].
-    T_lay : `~jax.numpy.ndarray`
-        Temperature at layer midpoints (nlev-1,) [K].
+    T_lev : `~jax.numpy.ndarray`, shape (nlev,)
+        Temperature at levels in Kelvin.
+    T_lay : `~jax.numpy.ndarray`, shape (nlev-1,)
+        Temperature at layer midpoints in Kelvin.
     """
 
     # Parameter values are already JAX arrays, no need to wrap
@@ -381,12 +409,12 @@ def dry_convective_adjustment(T_lay: jnp.ndarray, p_lay: jnp.ndarray, p_lev: jnp
 
     Parameters
     ----------
-    T_lay : `~jax.numpy.ndarray`
-        Initial layer temperatures (nlay,).
-    p_lay : `~jax.numpy.ndarray`
-        Layer pressures (nlay,).
-    p_lev : `~jax.numpy.ndarray`
-        Level pressures (nlay+1,).
+    T_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Initial layer temperatures in Kelvin.
+    p_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Layer pressures.
+    p_lev : `~jax.numpy.ndarray`, shape (nlay+1,)
+        Level pressures.
     kappa : float
         Adiabatic index (R/cp).
     max_iter : int, optional
@@ -396,8 +424,8 @@ def dry_convective_adjustment(T_lay: jnp.ndarray, p_lay: jnp.ndarray, p_lev: jnp
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        The convectively adjusted layer temperature profile (nlay,).
+    T_lay_adj : `~jax.numpy.ndarray`, shape (nlay,)
+        Convectively adjusted layer temperature profile in Kelvin.
     """
     nlay = T_lay.shape[0]
 

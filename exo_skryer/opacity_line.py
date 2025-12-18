@@ -1,39 +1,6 @@
 """
 opacity_line.py
 ===============
-
-Overview:
-    Line (molecular/atomic) absorption opacity contribution for the forward
-    model.
-
-    This module interpolates preloaded line-by-line cross-sections from
-    `build_opacities` onto the layer (P, T) structure and combines them with
-    species mixing ratios to produce a mass opacity (cm^2 g^-1) on the forward
-    model wavelength grid.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
-
-Usage:
-    The retrieval pipeline builds and caches opacity tables via
-    `build_opacities`. During forward-model evaluation, pass the shared `state`
-    dictionary into `compute_line_opacity(state, params)` to obtain the line
-    opacity contribution on the model wavelength grid.
-
-Key Functions:
-    - `_interpolate_sigma`: Bilinear interpolation in (log10 T, log10 P) for all
-      species, returning cross-sections on the layer grid.
-    - `compute_line_opacity`: Combines interpolated cross-sections with mixing
-      ratios and mean molecular weight to produce cm^2 g^-1.
-    - `zero_line_opacity`: Convenience helper returning an all-zero array with
-      the expected shape.
-
-Notes:
-    Cross-sections are stored in log10 space in the registry and are converted
-    back to linear space after interpolation. Pressure is interpolated in bar;
-    `state["p_lay"]` is expected in microbar and is converted internally.
 """
 
 from typing import Dict
@@ -51,21 +18,42 @@ __all__ = [
 
 
 def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp.ndarray) -> jnp.ndarray:
-    """Interpolate line cross-sections to layer conditions.
+    """Bilinear interpolation of line-by-line cross-sections on (log P, log T) grids.
 
-    Performs bilinear interpolation on each species' (log10 T, log10 P) grid.
+    This function retrieves pre-loaded line-by-line absorption cross-section tables
+    from the opacity registry and interpolates them to the specified atmospheric layer
+    conditions using bilinear interpolation in log₁₀(P)-log₁₀(T) space. The interpolation
+    is performed separately for each species and returns cross-sections in linear space.
 
     Parameters
     ----------
-    layer_pressures_bar : `~jax.numpy.ndarray`, shape `(nlay,)`
-        Layer pressures in bar.
-    layer_temperatures : `~jax.numpy.ndarray`, shape `(nlay,)`
-        Layer temperatures in K.
+    layer_pressures_bar : `~jax.numpy.ndarray`, shape (nlay,)
+        Atmospheric layer pressures in bar.
+    layer_temperatures : `~jax.numpy.ndarray`, shape (nlay,)
+        Atmospheric layer temperatures in Kelvin.
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Cross-sections in linear space with shape `(nspecies, nlay, nwl)`.
+    sigma_interp : `~jax.numpy.ndarray`, shape (nspecies, nlay, nwl)
+        Interpolated absorption cross-sections in linear space with units of
+        cm² molecule⁻¹. The axes represent:
+        - nspecies: Number of absorbing species
+        - nlay: Number of atmospheric layers
+        - nwl: Number of wavelength points
+
+    Notes
+    -----
+    The bilinear interpolation algorithm:
+    1. Convert layer pressures and temperatures to log₁₀ space
+    2. For each layer, find the bracketing (P, T) grid indices
+    3. Compute interpolation weights in each dimension
+    4. For each species, interpolate the four corners: (T₀,P₀), (T₀,P₁), (T₁,P₀), (T₁,P₁)
+    5. First interpolate in pressure at fixed T₀ and T₁, then interpolate in temperature
+    6. Convert from log₁₀ space back to linear space: σ = 10^(log₁₀σ_interp)
+
+    Cross-sections are stored in log₁₀ space in the registry to maintain numerical
+    stability across many orders of magnitude, then converted back to linear space
+    after interpolation.
     """
     # Direct access to cached registry data (no redundant caching needed)
     sigma_cube = XS.line_sigma_cube()
@@ -88,15 +76,15 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
 
         Parameters
         ----------
-        sigma_3d : `~jax.numpy.ndarray`
-            Log10 cross-sections with shape `(nT, nP, nwl)`.
-        temp_grid : `~jax.numpy.ndarray`
-            Temperature grid (K) with shape `(nT,)`.
+        sigma_3d : `~jax.numpy.ndarray`, shape (nT, nP, nwl)
+            Cross-sections for one species in log₁₀ space.
+        temp_grid : `~jax.numpy.ndarray`, shape (nT,)
+            Temperature grid for this species in Kelvin.
 
         Returns
         -------
-        jnp.ndarray
-            Log10 cross-sections interpolated to layers with shape `(nlay, nwl)`.
+        s_interp : `~jax.numpy.ndarray`, shape (nlay, nwl)
+            Interpolated cross-sections in log₁₀ space.
         """
         # sigma_3d: (n_temp, n_pressure, n_wavelength)
         # temp_grid: (n_temp,)
@@ -130,19 +118,35 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
 
 
 def zero_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-    """Return a zero line-opacity array.
+    """Return a zero line-by-line opacity array.
+
+    This function is used as a fallback when line-by-line opacities are disabled
+    in the configuration. It maintains API compatibility with `compute_line_opacity()`
+    so the forward model can seamlessly switch between LBL enabled/disabled.
 
     Parameters
     ----------
-    state : dict[str, jnp.ndarray]
-        State dictionary containing scalar entries `nlay` and `nwl`.
-    params : dict[str, jnp.ndarray]
-        Unused; kept for API compatibility.
+    state : dict[str, `~jax.numpy.ndarray`]
+        State dictionary containing:
+
+        - `nlay` : int
+            Number of atmospheric layers.
+        - `nwl` : int
+            Number of wavelength points.
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary (unused; kept for API compatibility).
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Array of zeros with shape `(nlay, nwl)`.
+    zeros : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Zero-valued line opacity array in cm² g⁻¹.
+
+    Notes
+    -----
+    This function maintains API compatibility with other opacity calculation
+    functions so that the forward model can seamlessly switch between different
+    opacity schemes without changing function signatures.
     """
     # Use shape directly without jnp.size() for JIT compatibility
     shape = (state["nlay"], state["nwl"])
@@ -150,29 +154,62 @@ def zero_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarr
 
 
 def compute_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-    """Compute line-by-line mass opacity.
+    """Compute line-by-line mass opacity for all molecular/atomic absorbers.
+
+    This function calculates the total line absorption opacity by:
+    1. Interpolating pre-loaded cross-sections to atmospheric (P, T) conditions
+    2. Weighting each species' opacity by its volume mixing ratio
+    3. Summing contributions from all species
+    4. Converting from molecular cross-section to mass opacity
 
     Parameters
     ----------
-    state : dict[str, jnp.ndarray]
-        State dictionary with at least:
+    state : dict[str, `~jax.numpy.ndarray`]
+        Atmospheric state dictionary containing:
 
-        - `p_lay` : `~jax.numpy.ndarray`, shape `(nlay,)`
+        - `p_lay` : `~jax.numpy.ndarray`, shape (nlay,)
             Layer pressures in microbar.
-        - `T_lay` : `~jax.numpy.ndarray`, shape `(nlay,)`
-            Layer temperatures in K.
-        - `mu_lay` : `~jax.numpy.ndarray`, shape `(nlay,)`
-            Mean molecular weight per layer (amu).
-        - `vmr_lay` : Mapping[str, Any]
-            Mapping from species name to volume mixing ratio per layer. Values
-            may be a scalar or a length-`nlay` vector.
-    params : dict[str, jnp.ndarray]
-        Unused; kept for API compatibility.
+        - `T_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Layer temperatures in Kelvin.
+        - `mu_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Mean molecular weight per layer in g mol^-1.
+        - `vmr_lay` : dict[str, `~jax.numpy.ndarray`]
+            Volume mixing ratios for each species. Keys must match species
+            names in the loaded line opacity tables. Values can be scalars
+            or arrays with shape (nlay,).
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary (unused; VMRs come from state['vmr_lay']).
+        Kept for API compatibility with other opacity functions.
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Line absorption opacity in cm^2 g^-1 with shape `(nlay, nwl)`.
+    kappa_line : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Total line absorption mass opacity in cm² g⁻¹ at each layer and
+        wavelength point.
+
+    Notes
+    -----
+    The opacity formula is:
+
+        κ_line(λ) = Σ_i [f_i × σ_i(λ, P, T)] / μ
+
+    where:
+    - f_i is the volume mixing ratio of species i
+    - σ_i is the absorption cross-section in cm² molecule⁻¹
+    - μ is the mean molecular weight in amu
+
+    The pressure input to this function should be in microbar to match the forward
+    model convention, but is converted to bar internally for table lookup.
+
+    Cross-sections are stored in log₁₀ space in the registry to handle values
+    spanning many orders of magnitude, then converted back to linear space after
+    interpolation.
+
+    See Also
+    --------
+    zero_line_opacity : Returns zero opacity when LBL is disabled
+    build_opacities : Pre-loads and caches line-by-line cross-section tables
     """
     layer_pressures = state["p_lay"]
     layer_temperatures = state["T_lay"]

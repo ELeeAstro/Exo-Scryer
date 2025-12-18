@@ -89,6 +89,9 @@ ehthumbs_vista.db
 # =============================================================================
 
 # Posterior/sampling outputs
+experiments/**/*.npz
+experiments/**/*.csv
+experiments/**/*.json
 experiments/**/posterior*.nc
 experiments/**/posterior*.h5
 experiments/**/posterior*.hdf5
@@ -170,6 +173,8 @@ obs_data/all_observations*.txt
 .env.local
 
 AGENTS.md
+
+workspace/*
 
 # =============================================================================
 # Sphinx Documentation Build Outputs - DO NOT COMMIT

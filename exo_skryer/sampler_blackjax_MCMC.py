@@ -1,14 +1,6 @@
 """
 sampler_blackjax_MCMC.py
 ========================
-
-Overview:
-    TODO: Describe the purpose and responsibilities of this module.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 # sampler_blackjax.py

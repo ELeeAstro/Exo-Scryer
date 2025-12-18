@@ -1,20 +1,6 @@
 """
 registry_ck.py
 ==============
-
-Overview:
-    Registry for correlated-k (c-k) opacity tables.
-
-    Similar to registry_line.py but handles 4D opacity tables:
-    (temperature, pressure, wavelength, g-point)
-
-    The g-points represent quadrature points for the correlated-k method,
-    which approximates line-by-line calculations by sorting absorption
-    coefficients within each spectral bin.
-
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from __future__ import annotations

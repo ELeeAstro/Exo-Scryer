@@ -1,6 +1,7 @@
-"""
+'''
 aux_functions.py
-"""
+==============
+'''
 
 import jax
 import jax.numpy as jnp
@@ -18,14 +19,20 @@ def _pchip_slopes(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     Parameters
     ----------
     x : `~jax.numpy.ndarray`
-        Node positions (N,), must be sorted in ascending order.
+        1D array of node positions with shape (N,), must be sorted in ascending
+        order. Minimum length is 2.
     y : `~jax.numpy.ndarray`
-        Function values at nodes (N,).
+        1D array of function values at the node positions with shape (N,).
+        Must have the same length as `x`.
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Slopes (derivatives) at each node (N,).
+    m : `~jax.numpy.ndarray`
+        1D array of slopes (first derivatives) at each node position with shape (N,).
+        Slopes are computed to preserve monotonicity: when adjacent intervals have
+        opposite-signed secants, the slope is set to zero to prevent overshooting.
+        For N=2, returns constant slope equal to the secant. For N>=3, uses weighted
+        harmonic mean for interior points and one-sided formulas for endpoints.
     """
     x = jnp.asarray(x)
     y = jnp.asarray(y)
@@ -95,15 +102,21 @@ def pchip_1d(x: jnp.ndarray,
     ----------
     x : `~jax.numpy.ndarray`
         The x-coordinates at which to evaluate the interpolated values.
+        Can be any shape; interpolation is performed element-wise.
     x_nodes : `~jax.numpy.ndarray`
-        1D array of data point x-coordinates, must be sorted.
+        1D array of data point x-coordinates, must be sorted in ascending order.
+        Minimum length is 2.
     y_nodes : `~jax.numpy.ndarray`
-        1D array of data point y-coordinates, same length as `x_nodes`.
+        1D array of data point y-coordinates corresponding to `x_nodes`.
+        Must have the same length as `x_nodes`.
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        The interpolated values, same shape as `x`.
+    y : `~jax.numpy.ndarray`
+        The interpolated values at positions `x`, with the same shape as `x`.
+        Values are computed using shape-preserving cubic Hermite interpolation.
+        Points outside the range [x_nodes[0], x_nodes[-1]] are clipped to
+        boundary values.
     """
     x = jnp.asarray(x)
     x_nodes = jnp.asarray(x_nodes)
@@ -147,26 +160,36 @@ def latin_hypercube(
     scramble: bool = True,
     dtype=jnp.float32,
 ) -> tuple[jnp.ndarray, jax.Array]:
-    """Generate Latin hypercube samples in [0, 1).
+    """Generate Latin hypercube samples in the unit hypercube [0, 1)^n_dim.
+
+    Latin Hypercube Sampling (LHS) is a stratified sampling technique that ensures
+    better space-filling properties than pure random sampling. The unit interval
+    [0, 1) is divided into `n_samples` equally probable strata in each dimension,
+    and one sample is drawn from each stratum.
 
     Parameters
     ----------
-    key : jax.Array
-        PRNG key.
+    key : `~jax.Array`
+        JAX PRNG key for random number generation.
     n_samples : int
-        Number of samples to generate.
+        Number of samples to generate. Must be positive.
     n_dim : int
-        Number of dimensions for each sample.
-    scramble : bool, default=True
-        If True, permutes strata assignment to reduce alignment.
-    dtype : dtype, default=jax.numpy.float32
-        Output dtype.
+        Number of dimensions for each sample. Must be positive.
+    scramble : bool, optional
+        If True (default), randomly permutes the stratum assignments for each
+        dimension independently, reducing correlation between dimensions and
+        improving space-filling properties. If False, strata are assigned
+        sequentially without permutation.
+    dtype : dtype, optional
+        Data type for the output array. Default is `jax.numpy.float32`.
 
     Returns
     -------
-    tuple[jax.numpy.ndarray, jax.Array]
-        A tuple containing the generated samples of shape `(n_samples, n_dim)`
-        and the updated PRNG key.
+    samples : `~jax.numpy.ndarray`
+        Generated Latin hypercube samples with shape `(n_samples, n_dim)`.
+        Each value is in the range [0, 1).
+    key : `~jax.Array`
+        Updated PRNG key for subsequent random operations.
     """
     dtype = jnp.dtype(dtype)
     key, key_u, key_perm = jax.random.split(key, 3)

@@ -1,19 +1,51 @@
 """
 read_obs.py
 ===========
-
-Overview:
-   Reads in the observation data for the retrieval
-
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from pathlib import Path
+from typing import Any, Optional
 import numpy as np
 
-__all__ = ['read_obs_data']
+__all__ = ['resolve_obs_path', 'read_obs_data']
+
+
+def resolve_obs_path(cfg: Any) -> str:
+    """Resolve the observational data path from configuration.
+
+    Parameters
+    ----------
+    cfg : config object
+        Parsed YAML configuration object with `cfg.data.obs` attribute.
+
+    Returns
+    -------
+    str
+        Observational data path as specified in ``cfg.data.obs``.
+
+    Raises
+    ------
+    ValueError
+        If no observational data path is present in the configuration.
+
+    Examples
+    --------
+    >>> obs_path = resolve_obs_path(cfg)
+    >>> obs = read_obs_data(obs_path, base_dir=exp_dir)
+    """
+    data_cfg = getattr(cfg, "data", None)
+    rel_obs_path: Optional[str] = None
+
+    if data_cfg is not None:
+        rel_obs_path = getattr(data_cfg, "obs", None)
+
+    if rel_obs_path is None:
+        raise ValueError(
+            "No observational data path found. Set cfg.data.obs in the YAML config."
+        )
+
+    return rel_obs_path
+
 
 def _load_columns(path: str) -> np.ndarray:
     '''

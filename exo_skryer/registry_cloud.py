@@ -1,24 +1,6 @@
 """
 registry_cloud.py
 =================
-
-Overview:
-    Global cache registry for cloud opacity computations, specifically for
-    optimizing Kramers-Kronig relation calculations.
-
-Usage:
-    The KK grid cache stores precomputed grid-dependent quantities that are
-    reused across multiple evaluations of the KK relation with different
-    extinction coefficients but the same wavelength/wavenumber grid.
-
-Key Functions:
-    - get_or_create_kk_cache: Retrieves or creates cached KK grid data
-    - compute_kk_grid_cache: Precomputes all grid-dependent KK quantities
-
-Notes:
-    - The cache uses array identity (id()) as the key
-    - This is O(N^2) memory but only computed once per unique grid
-    - Provides significant speedup for repeated KK evaluations
 """
 
 from typing import Dict, NamedTuple

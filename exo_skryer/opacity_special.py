@@ -1,36 +1,6 @@
 """
 opacity_special.py
 ==================
-
-Overview:
-    Custom opacity sources that do not fit the standard line / CIA / Rayleigh /
-    cloud separation.
-
-    This module is intended as an extension point for additional continuum or
-    ad-hoc opacity terms. Each special source should expose a small, JAX-safe
-    function that returns a mass opacity on the forward-model wavelength grid.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
-
-Usage:
-    The forward model calls `compute_special_opacity(state, params)` and adds
-    the result into the total opacity budget. This module should be safe to
-    call regardless of which special sources are configured; when no relevant
-    data are available it returns zeros.
-
-Key Functions:
-    - `compute_special_opacity`: Computes and sums all enabled special opacity
-      terms.
-    - `compute_hminus_opacity`: Computes the H- continuum opacity using the
-      H- entry in the CIA registry (if present).
-    - `zero_special_opacity`: Convenience helper returning an all-zero array.
-
-Notes:
-    Special opacities are expected to be 2D arrays `(nlay, nwl)` and are
-    broadcast across g-points in correlated-k RT (if used).
 """
 
 from __future__ import annotations
@@ -52,15 +22,21 @@ def zero_special_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nd
 
     Parameters
     ----------
-    state : dict[str, jnp.ndarray]
-        State dictionary containing scalar entries `nlay` and `nwl`.
-    params : dict[str, jnp.ndarray]
-        Unused; kept for API compatibility.
+    state : dict[str, `~jax.numpy.ndarray`]
+        State dictionary containing:
+
+        - `nlay` : int
+            Number of atmospheric layers.
+        - `nwl` : int
+            Number of wavelength points.
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary (unused; kept for API compatibility).
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Array of zeros with shape `(nlay, nwl)`.
+    zeros : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Zero-valued special-opacity array in cm² g⁻¹.
     """
     del params
     # Use shape directly without int() conversion for JIT compatibility
@@ -78,16 +54,25 @@ def _interpolate_logsigma_1d(
     Parameters
     ----------
     sigma_log : `~jax.numpy.ndarray`, shape `(nT, nwl)`
-        Log10 cross-sections.
+        Log₁₀ cross-sections as a function of temperature.
     temperature_grid : `~jax.numpy.ndarray`, shape `(nT,)`
-        Temperature grid in K.
+        Temperature grid in Kelvin.
     layer_temperatures : `~jax.numpy.ndarray`, shape `(nlay,)`
-        Layer temperatures in K.
+        Layer temperatures in Kelvin.
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Log10 cross-sections interpolated to layers, shape `(nlay, nwl)`.
+    sigma_interp_log : `~jax.numpy.ndarray`, shape `(nlay, nwl)`
+        Log₁₀ cross-sections interpolated to each layer temperature.
+
+    Notes
+    -----
+    - Interpolation is performed linearly in log₁₀(T), which is typically more
+      stable for continuum tables spanning wide temperature ranges.
+    - For layer temperatures below the minimum tabulated temperature, the
+      output is set to a very small log₁₀ cross-section (`-199`) to avoid
+      extrapolation while remaining numerically safe after converting back to
+      linear space.
     """
     log_t_layers = jnp.log10(layer_temperatures)
     log_t_grid = jnp.log10(temperature_grid)
@@ -108,24 +93,52 @@ def _interpolate_logsigma_1d(
 
 
 def compute_hminus_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-    """Compute H- continuum opacity (mass opacity).
+    """Compute H⁻ continuum mass opacity from the CIA registry.
 
-    This uses the `H-` entry from the CIA registry (if loaded) and applies the
-    `nd / rho` normalization appropriate for a single-absorber continuum.
+    This function uses the `"H-"` entry from the CIA registry (if loaded) as a
+    temperature-dependent cross-section table and applies the `(n / ρ)`
+    normalization appropriate for a single-absorber continuum term.
 
     Parameters
     ----------
-    state : dict[str, jnp.ndarray]
-        State dictionary with at least `wl`, `T_lay`, `nd_lay`, `rho_lay`,
-        `vmr_lay`, and scalar `nlay`/`nwl`.
-    params : dict[str, jnp.ndarray]
-        Unused; kept for API compatibility.
+    state : dict[str, `~jax.numpy.ndarray`]
+        Atmospheric state dictionary containing:
+
+        - `wl` : `~jax.numpy.ndarray`, shape (nwl,)
+            Forward-model wavelength grid in microns.
+        - `T_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Layer temperatures in Kelvin.
+        - `nd_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Layer total number density in cm⁻³.
+        - `rho_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Layer mass density in g cm⁻³.
+        - `vmr_lay` : dict[str, `~jax.numpy.ndarray`]
+            Volume mixing ratios per species. Must include `"H-"` to enable this
+            term. Values may be scalars or arrays with shape (nlay,).
+        - `nlay` : int
+            Number of atmospheric layers.
+        - `nwl` : int
+            Number of wavelength points.
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary (unused; kept for API compatibility).
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        H- opacity in cm^2 g^-1 with shape `(nlay, nwl)`. Returns zeros when the
-        CIA registry is not loaded or does not contain `H-`.
+    kappa_hminus : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        H⁻ continuum mass opacity in cm² g⁻¹. Returns zeros when the CIA registry
+        is not loaded, does not contain `"H-"`, or when `state["vmr_lay"]` does
+        not provide an `"H-"` mixing ratio.
+
+    Notes
+    -----
+    The CIA registry cross-sections are stored in log₁₀ space. This function
+    interpolates in log₁₀(T) and converts back to linear space via:
+
+        σ(λ, T) = 10^(log₁₀σ_interp)
+
+    The wavelength grid in `state["wl"]` must match
+    `build_opacities.cia_master_wavelength()`; a mismatch raises `ValueError`.
     """
     if not XS.has_cia_data():
         return zero_special_opacity(state, params)
@@ -163,18 +176,26 @@ def compute_hminus_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.
 
 
 def compute_special_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-    """Compute the summed special opacity contribution.
+    """Compute the summed special-opacity contribution.
+
+    This is the top-level entry point for special opacity sources. It returns a
+    single array with shape (nlay, nwl) in cm² g⁻¹ that can be added to the total
+    opacity in the forward model.
 
     Parameters
     ----------
-    state : dict[str, jnp.ndarray]
+    state : dict[str, `~jax.numpy.ndarray`]
         Forward-model state dictionary.
-    params : dict[str, jnp.ndarray]
+    params : dict[str, `~jax.numpy.ndarray`]
         Parameter dictionary (currently unused).
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Total special opacity in cm^2 g^-1 with shape `(nlay, nwl)`.
+    kappa_special : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Total special mass opacity in cm² g⁻¹.
+
+    See Also
+    --------
+    compute_hminus_opacity : H⁻ continuum special term
     """
     return compute_hminus_opacity(state, params)

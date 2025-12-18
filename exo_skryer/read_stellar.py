@@ -1,15 +1,6 @@
 """
 read_stellar.py
 ================
-
-Overview:
-    Helper utilities to read stellar spectra files and interpolate them
-    onto the master wavelength grid used by the forward model.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from __future__ import annotations

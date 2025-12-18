@@ -1,5 +1,6 @@
 """
-TODO: Module-level docstring placeholder.
+vert_mu.py
+==========
 """
 
 from __future__ import annotations
@@ -20,19 +21,22 @@ __all__ = [
 
 
 def constant_mu(params: Dict[str, jnp.ndarray], nlay: int) -> jnp.ndarray:
-    """Generate a constant mean molecular weight profile.
+    """Return a constant mean molecular weight (μ) profile.
 
     Parameters
     ----------
-    params : dict[str, jnp.ndarray]
-        Dictionary containing 'mu' for the mean molecular weight [amu].
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `mu` : float
+            Mean molecular weight in g mol⁻¹
     nlay : int
         Number of atmospheric layers.
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Mean molecular weight profile of shape (nlay,).
+    mu_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Mean molecular weight profile in g mol⁻¹.
     """
     if "mu" not in params:
         raise ValueError("vert_mu='constant' requires a 'mu' parameter.")
@@ -45,14 +49,19 @@ def compute_mu(vmr_lay: Dict[str, jnp.ndarray]) -> jnp.ndarray:
 
     Parameters
     ----------
-    vmr_lay : dict[str, jnp.ndarray]
-        Dictionary mapping species symbols to their VMR profiles. Each
-        value should be an array of shape (nlay,).
+    vmr_lay : dict[str, `~jax.numpy.ndarray`]
+        Dictionary mapping species symbols to their VMR profiles. Each value
+        should be an array of shape (nlay,).
 
     Returns
     -------
-    `~jax.numpy.ndarray`
-        Mean molecular weight profile of shape (nlay,) [amu].
+    mu_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Mean molecular weight profile in g mol⁻¹.
+
+    Notes
+    -----
+    Species are included only if their symbols exist in the internal molecular
+    weight table derived from `data_constants.CHEM_SPECIES_DATA`.
     """
     species_list = sorted(species for species in vmr_lay.keys() if species in _SPECIES_MASS)
     if not species_list:

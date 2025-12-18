@@ -4,7 +4,7 @@ build_model.py
 """
 
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, Callable, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -14,7 +14,7 @@ from .data_constants import kb, amu, R_jup, R_sun, bar, G, M_jup
 
 from .vert_alt import hypsometric, hypsometric_variable_g, hypsometric_variable_g_pref
 from .vert_Tp import isothermal, Milne, Guillot, Barstow, MandS09, picket_fence
-from .vert_chem import build_constant_vmr_kernel, constant_vmr, chemical_equilibrium, CE_rate_jax
+from .vert_chem import constant_vmr, CE_fastchem_jax, CE_rate_jax
 from .vert_mu import constant_mu, compute_mu
 
 from .opacity_line import zero_line_opacity, compute_line_opacity
@@ -25,7 +25,7 @@ from .opacity_special import zero_special_opacity, compute_special_opacity
 from .opacity_cloud import zero_cloud_opacity, grey_cloud, powerlaw_cloud, F18_cloud, F18_cloud_2, direct_nk
 
 from . import build_opacities as XS
-from .build_chem import infer_trace_species, infer_log10_vmr_keys, validate_log10_vmr_params
+from .build_chem import prepare_chemistry_kernel
 
 from .RT_trans_1D import compute_transit_depth_1d
 from .RT_em_1D import compute_emission_spectrum_1d
@@ -37,7 +37,86 @@ __all__ = [
 ]
 
 
-def build_forward_model(cfg, obs, stellar_flux=None, kk_cache=None, return_highres: bool = False):
+def build_forward_model(
+    cfg,
+    obs: Dict,
+    stellar_flux: Optional[np.ndarray] = None,
+    return_highres: bool = False,
+) -> Callable[[Dict[str, jnp.ndarray]], Union[jnp.ndarray, Dict[str, jnp.ndarray]]]:
+    """Build a JIT-compiled forward model for atmospheric retrieval.
+
+    This function constructs a forward model by assembling physics kernels for
+    vertical structure (temperature, chemistry, altitude), opacity sources
+    (line, continuum, clouds), and radiative transfer. The returned function
+    is JIT-compiled for efficient gradient-based inference.
+
+    Parameters
+    ----------
+    cfg : config object
+        Configuration object containing physics settings (`cfg.physics`),
+        opacity configuration (`cfg.opac`), and retrieval parameters (`cfg.params`).
+        Must specify schemes for vertical structure (vert_Tp, vert_alt, vert_chem,
+        vert_mu), opacity sources (opac_line, opac_ray, opac_cia, opac_cloud,
+        opac_special), and radiative transfer (rt_scheme).
+    obs : dict
+        Observational data dictionary containing:
+        - 'wl' : Observed wavelengths in microns (for bandpass loading)
+        - 'dwl' : Wavelength bin widths in microns
+    stellar_flux : `~numpy.ndarray`, optional
+        Stellar flux array for emission spectroscopy calculations. Required when
+        rt_scheme is 'emission_1d' and emission_mode is 'planet' (not brown dwarf).
+        Should match the high-resolution wavelength grid.
+    return_highres : bool, optional
+        If True, the forward model returns both high-resolution and binned spectra
+        as a dictionary: `{'hires': D_hires, 'binned': D_bin}`. If False (default),
+        returns only the binned spectrum as a 1D array.
+
+    Returns
+    -------
+    forward_model : callable
+        A JIT-compiled function with signature:
+        `forward_model(params: Dict[str, jnp.ndarray]) -> Union[jnp.ndarray, Dict]`
+
+        The function takes a parameter dictionary (free parameters from the retrieval)
+        and returns:
+        - If `return_highres=False`: 1D array of binned transit depth or emission flux
+        - If `return_highres=True`: Dict with keys 'hires' (high-res spectrum) and
+          'binned' (convolved spectrum)
+
+    Notes
+    -----
+    The forward model pipeline consists of:
+
+    1. **Vertical Structure**: Computes pressure-temperature profile (vert_Tp),
+       altitude grid (vert_alt), chemical abundances (vert_chem), and mean
+       molecular weight (vert_mu) for each atmospheric layer.
+
+    2. **Opacity Calculation**: Computes wavelength-dependent opacity from line
+       absorption (opac_line), Rayleigh scattering (opac_ray), collision-induced
+       absorption (opac_cia), clouds (opac_cloud), and special opacity sources
+       like H- bound-free (opac_special).
+
+    3. **Radiative Transfer**: Solves the radiative transfer equation using the
+       specified rt_scheme (transit_1d or emission_1d) to produce a high-resolution
+       spectrum.
+
+    4. **Instrumental Response**: Applies wavelength-dependent response functions
+       to produce the final binned spectrum matching observational resolution.
+
+    Configuration schemes are selected from `cfg.physics`:
+    - **vert_Tp**: isothermal, guillot, barstow, milne, picket_fence, ms09
+    - **vert_alt**: constant_g, variable_g, p_ref
+    - **vert_chem**: constant_vmr, ce (FastChem placeholder), ce_rate_jax
+    - **vert_mu**: auto, constant, dynamic
+    - **opac_line**: none, lbl, ck
+    - **opac_ray, opac_cia**: none, lbl, ck
+    - **opac_cloud**: none, grey, powerlaw_cloud, f18, f18_2, nk
+    - **opac_special**: on (default), off
+    - **rt_scheme**: transit_1d, emission_1d
+
+    For constant VMR chemistry, required trace species are automatically inferred
+    from the opacity configuration and validated against `cfg.params`.
+    """
 
     # Extract fixed (delta) parameters from cfg.params
     fixed_params = {}
@@ -98,8 +177,8 @@ def build_forward_model(cfg, obs, stellar_flux=None, kk_cache=None, return_highr
     vert_chem_name = str(vert_chem_raw).lower()
     if vert_chem_name in ("constant", "constant_vmr"):
         chemistry_kernel = constant_vmr
-    elif vert_chem_name in ("ce", "chemical_equilibrium"):
-        chemistry_kernel = chemical_equilibrium
+    elif vert_chem_name in ("ce", "chemical_equilibrium", "ce_fastchem_jax", "fastchem_jax"):
+        chemistry_kernel = CE_fastchem_jax
     elif vert_chem_name in ("rate_ce", "rate_jax", "ce_rate_jax"):
         chemistry_kernel = CE_rate_jax
     else:
@@ -216,17 +295,16 @@ def build_forward_model(cfg, obs, stellar_flux=None, kk_cache=None, return_highr
     emission_mode = str(emission_mode).lower().replace(" ", "_")
     is_brown_dwarf = emission_mode in ("brown_dwarf", "browndwarf", "bd")
 
-    trace_species = infer_trace_species(
+    chemistry_kernel, trace_species = prepare_chemistry_kernel(
         cfg,
-        line_opac_scheme_str=line_opac_scheme_str,
-        ray_opac_scheme_str=ray_opac_scheme_str,
-        cia_opac_scheme_str=cia_opac_scheme_str,
-        special_opac_scheme_str=special_opac_scheme_str,
+        chemistry_kernel,
+        {
+            'line_opac': line_opac_scheme_str,
+            'ray_opac': ray_opac_scheme_str,
+            'cia_opac': cia_opac_scheme_str,
+            'special_opac': special_opac_scheme_str,
+        }
     )
-    log_keys = infer_log10_vmr_keys(trace_species)
-    if chemistry_kernel is constant_vmr:
-        validate_log10_vmr_params(cfg, trace_species)
-        chemistry_kernel = build_constant_vmr_kernel(trace_species)
 
     @jax.jit
     def forward_model(params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
@@ -304,8 +382,6 @@ def build_forward_model(cfg, obs, stellar_flux=None, kk_cache=None, return_highr
         }
         if stellar_flux_arr is not None:
             state["stellar_flux"] = stellar_flux_arr
-        if kk_cache is not None:
-            state["kk_cache"] = kk_cache
         if g_weights is not None:
             state["g_weights"] = g_weights
         if ck_mix_code is not None:
@@ -332,7 +408,7 @@ def build_forward_model(cfg, obs, stellar_flux=None, kk_cache=None, return_highr
         D_hires = rt_kernel(state, full_params, opacity_components)
 
         # Instrumental convolution → binned spectrum
-        D_bin = apply_response_functions(wl, D_hires)
+        D_bin = apply_response_functions(D_hires)
 
         if return_highres:
             return {"hires": D_hires, "binned": D_bin}

@@ -8,8 +8,36 @@ from typing import Any, Dict, List
 
 
 __all__ = [
+    "format_duration",
     "print_cfg"
 ]
+
+def format_duration(seconds: float) -> str:
+    """Format a duration in seconds into a human-readable string.
+
+    Parameters
+    ----------
+    seconds : float
+        Duration in seconds.
+
+    Returns
+    -------
+    str
+        Formatted duration as ``"<d>d <h>h <m>m <s>s"``.
+
+    Examples
+    --------
+    >>> format_duration(3661.5)
+    '0d 1h 1m 1.500s'
+    >>> format_duration(90125.234)
+    '1d 1h 2m 5.234s'
+    """
+    days, rem = divmod(seconds, 24 * 3600)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds_final = divmod(rem, 60)
+
+    return f"{int(days)}d {int(hours)}h {int(minutes)}m {seconds_final:.3f}s"
+
 
 def _format_value(value: Any) -> str:
     if value is None:

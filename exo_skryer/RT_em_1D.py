@@ -1,17 +1,6 @@
 """
 RT_em_1D.py
 ===========
-
-Overview:
-    Longwave emission solver using the extended absorption approximation
-    (alpha-nEAA) following Li (2002). The implementation mirrors the
-    lw_AA_L_mod Fortran module but works on the native wavelength grid
-    with wavelength-dependent Planck sources.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from __future__ import annotations

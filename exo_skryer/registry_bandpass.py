@@ -1,19 +1,6 @@
 """
 instru_bandpass.py
 ==================
-
-Overview:
-    Prepare and cache instrument bandpass / response information for each
-    observational bin, and expose JAX-ready padded arrays for fast convolution.
-
-Notes:
-    - Assumes obs['wl'], obs['dwl'], cut_grid, and the filter files all use
-      the same wavelength units.
-    - For each bin, we define weights w(λ) and a normalization
-          norm = ∫ w(λ) dλ
-      over the *actual* wavelength slice used.
-      The later convolution should then compute:
-          y_bin = ∫ F(λ) w(λ) dλ / norm
 """
 
 from __future__ import annotations

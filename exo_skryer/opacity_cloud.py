@@ -1,15 +1,8 @@
 """
 opacity_cloud.py
 ================
-
-Overview:
-    TODO: Describe the purpose and responsibilities of this module.
-
-Sections to complete:
-    - Usage
-    - Key Functions
-    - Notes
 """
+
 from typing import Dict, Tuple, Optional
 import jax
 import jax.numpy as jnp
@@ -32,6 +25,30 @@ __all__ = [
 
 
 def zero_cloud_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Return zero-valued cloud optical properties.
+
+    Parameters
+    ----------
+    state : dict[str, `~jax.numpy.ndarray`]
+        State dictionary containing:
+
+        - `nlay` : int
+            Number of atmospheric layers.
+        - `nwl` : int
+            Number of wavelength points.
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary (unused; kept for API compatibility).
+
+    Returns
+    -------
+    k_cld : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Cloud extinction coefficient in cm² g⁻¹ (all zeros).
+    ssa : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Single-scattering albedo (all zeros).
+    g : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Asymmetry parameter (all zeros).
+    """
     del params
     # Use shape directly without int() conversion for JIT compatibility
     shape = (state["nlay"], state["nwl"])
@@ -42,6 +59,27 @@ def zero_cloud_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndar
 
 
 def grey_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Compute a grey (wavelength-independent) cloud opacity floor.
+
+    Parameters
+    ----------
+    state : dict[str, `~jax.numpy.ndarray`]
+        State dictionary containing scalar entries `nlay` and `nwl`.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `log_10_k_cld_grey` : float
+            Log₁₀ of the grey cloud extinction coefficient in cm² g⁻¹.
+
+    Returns
+    -------
+    k_cld : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Grey cloud extinction coefficient in cm² g⁻¹.
+    ssa : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Single-scattering albedo (zeros; pure absorption).
+    g : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Asymmetry parameter (zeros).
+    """
     # Use shape directly without int() conversion for JIT compatibility
     shape = (state["nlay"], state["nwl"])
     opacity_value = 10.0**params["log_10_k_cld_grey"]
@@ -52,54 +90,42 @@ def grey_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) ->
 
 
 def powerlaw_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Two-component cloud opacity: grey + power-law (Rayleigh-like) wavelength dependence.
+    """Compute a grey + power-law cloud opacity.
 
-    Implements: k_cloud(λ) = k_grey + k_powerlaw * (λ / λ_ref)^(-alpha)
+    The extinction coefficient is computed as:
 
-    This combines a wavelength-independent grey opacity with a power-law component
-    that can represent Rayleigh scattering or other wavelength-dependent processes.
+        k_cld(λ) = k_grey + k_powerlaw × (λ / λ_ref)^(-α)
 
     Parameters
     ----------
-    state : dict
-        --
-    params : dict
-        ``params`` contains the following values:
-            log_10_k_cld_grey : float
-                Log10 of constant grey opacity component (cm^2/g)
-                This provides a wavelength-independent floor opacity
-            log_10_k_cld_Ray : float
-                Log10 of power-law amplitude at λ_ref (cm^2/g)
-                This is the strength of the wavelength-dependent component
-            alpha_cld : float
-                Power-law exponent for wavelength dependence
-                - alpha = 0: both components are grey
-                - alpha = 4: Rayleigh scattering slope (λ^-4)
-                - alpha > 0: power-law component is stronger at shorter wavelengths
-            wl_ref_cld : float
-                Reference wavelength in microns
+    state : dict[str, `~jax.numpy.ndarray`]
+        State dictionary containing:
+
+        - `wl` : `~jax.numpy.ndarray`, shape (nwl,)
+            Wavelength grid in microns.
+        - `nlay` : int
+            Number of atmospheric layers.
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `log_10_k_cld_grey` : float
+            Log₁₀ of the grey opacity component in cm² g⁻¹.
+        - `log_10_k_cld_Ray` : float
+            Log₁₀ amplitude of the power-law component at `wl_ref_cld` in cm² g⁻¹.
+        - `alpha_cld` : float
+            Power-law exponent α (e.g., α=4 gives a Rayleigh-like λ⁻⁴ slope).
+        - `wl_ref_cld` : float
+            Reference wavelength in microns.
 
     Returns
     -------
-    k_cld : `~jax.numpy.ndarray`
-        Cloud opacity (nlay, nwl) in cm^2/g
-    ssa : `~jax.numpy.ndarray`
-        Single scattering albedo (zeros, pure absorption)
-    g : `~jax.numpy.ndarray`
-        Asymmetry parameter (zeros)
-
-    Examples
-    --------
-    Configuration for pure Rayleigh-like slope (no grey):
-        log_10_k_cld_grey: -10.0  # negligible
-        log_10_k_cld_powerlaw: -2.0  # dominant
-        alpha_cld: 4.0
-
-    Configuration for grey + Rayleigh slope:
-        log_10_k_cld_grey: -3.0
-        log_10_k_cld_powerlaw: -2.0
-        alpha_cld: 4.0
+    k_cld : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Cloud extinction coefficient in cm² g⁻¹.
+    ssa : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Single-scattering albedo (zeros; pure absorption).
+    g : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Asymmetry parameter (zeros).
     """
     wl = state["wl"]
     nlay = state["nlay"]
@@ -131,6 +157,43 @@ def powerlaw_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]
 
 
 def F18_cloud(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Compute a cloud opacity using Fisher and Heng (2018).
+
+    This function evaluates an extinction efficiency `Qext(x)` as a function of
+    size parameter `x = 2πr/λ` and converts it into a wavelength-dependent cloud
+    extinction coefficient. The result is broadcast over layers.
+
+    Parameters
+    ----------
+    state : dict[str, `~jax.numpy.ndarray`]
+        State dictionary containing:
+
+        - `wl` : `~jax.numpy.ndarray`, shape (nwl,)
+            Wavelength grid in microns.
+        - `nlay` : int
+            Number of atmospheric layers.
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `log_10_cld_r` : float
+            Log₁₀ particle radius (units assumed consistent with the parameterization).
+        - `cld_Q0` : float
+            Extinction-efficiency scale factor.
+        - `cld_a` : float
+            Power-law exponent controlling the small-particle regime.
+        - `log_10_q_c` : float
+            Log₁₀ cloud mass-mixing parameter controlling overall opacity strength.
+
+    Returns
+    -------
+    k_cld : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Cloud extinction coefficient in cm² g⁻¹.
+    ssa : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Single-scattering albedo (zeros; pure absorption).
+    g : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Asymmetry parameter (zeros).
+    """
     wl = state["wl"]
     nlay = state["nlay"]
     r = 10.0**params["log_10_cld_r"]
@@ -157,33 +220,29 @@ def kk_n_from_k_wavenumber_cached(
     n_ref: jnp.ndarray,
     cache: KKGridCache,
 ) -> jnp.ndarray:
-    """
-    JIT-friendly Kramers-Kronig with explicit cache argument.
+    """Compute `n(ν)` from `k(ν)` via a singly-subtracted Kramers–Kronig relation.
 
-    This is the optimal version for JAX: pure functional with no Python dict lookups.
-    The cache is passed explicitly, making it JIT-compatible.
-
-    Memory-efficient: Computes alpha_inv on-the-fly instead of caching it.
-    For N=33219, this saves ~8.8 GB of memory with minimal performance cost
-    due to JAX's JIT fusion.
+    This variant is JIT-friendly: the `KKGridCache` is passed explicitly, avoiding
+    Python-side cache lookups. Grid-dependent trapezoid weights are reused via
+    the cache.
 
     Parameters
     ----------
-    nu : array (N,)
-        Wavenumber grid, strictly increasing
-    k_nu : array (N,)
-        Extinction coefficient on nu grid
-    nu_ref : scalar
-        Reference wavenumber for anchoring
-    n_ref : scalar
-        Refractive index at nu_ref
-    cache : KKGridCache
-        Precomputed grid quantities (only O(N) data now)
+    nu : `~jax.numpy.ndarray`, shape (N,)
+        Wavenumber grid (strictly increasing), e.g. cm⁻¹.
+    k_nu : `~jax.numpy.ndarray`, shape (N,)
+        Extinction coefficient on the wavenumber grid (clipped to be non-negative).
+    nu_ref : `~jax.numpy.ndarray`
+        Reference wavenumber used to anchor the subtraction term.
+    n_ref : `~jax.numpy.ndarray`
+        Real refractive index at `nu_ref`.
+    cache : `~exo_skryer.registry_cloud.KKGridCache`
+        Precomputed grid quantities for this `nu` grid (e.g., trapezoid weights).
 
     Returns
     -------
-    n_nu : array (N,)
-        Real refractive index computed via KK relation
+    n_nu : `~jax.numpy.ndarray`, shape (N,)
+        Real refractive index on the wavenumber grid.
     """
     k_nu = jnp.maximum(k_nu, 0.0)
 
@@ -231,43 +290,34 @@ def kk_n_from_k_wavenumber_fast(
     n_ref: jnp.ndarray,   # scalar
     cache: Optional[KKGridCache] = None,
 ) -> jnp.ndarray:
-    """
-    Optimized singly-subtracted Kramers–Kronig using precomputed grid quantities.
-
-    The key optimization is recognizing that y1 can be computed as:
-        v = nu * k_nu  (element-wise product)
-        y1[i,j] = (v[j] - v[i]) / alpha[i,j]
-
-    This reduces the number of operations significantly.
+    """Optimized KK relation using precomputed grid quantities.
 
     Parameters
     ----------
-    nu : array (N,)
-        Wavenumber grid, strictly increasing
-    k_nu : array (N,)
-        Extinction coefficient on nu grid
-    nu_ref : scalar
-        Reference wavenumber for anchoring
-    n_ref : scalar
-        Refractive index at nu_ref
-    cache : KKGridCache, optional
-        Precomputed grid quantities. If None, looks up from global registry.
-        For JIT-compiled code, pass cache explicitly.
+    nu : `~jax.numpy.ndarray`, shape (N,)
+        Wavenumber grid (strictly increasing), e.g. cm⁻¹.
+    k_nu : `~jax.numpy.ndarray`, shape (N,)
+        Extinction coefficient on the wavenumber grid (clipped to be non-negative).
+    nu_ref : `~jax.numpy.ndarray`
+        Reference wavenumber used to anchor the subtraction term.
+    n_ref : `~jax.numpy.ndarray`
+        Real refractive index at `nu_ref`.
+    cache : `~exo_skryer.registry_cloud.KKGridCache`, optional
+        Precomputed grid quantities for this `nu` grid. If `None`, the cache is
+        obtained via `registry_cloud.get_or_create_kk_cache(nu)`.
 
     Returns
     -------
-    n_nu : array (N,)
-        Real refractive index computed via KK relation
+    n_nu : `~jax.numpy.ndarray`, shape (N,)
+        Real refractive index on the wavenumber grid.
 
     Notes
     -----
-    For best performance in JIT-compiled code, pre-compute the cache and pass it::
+    For best performance in JIT-compiled code, precompute the cache and pass it
+    explicitly:
 
         cache = get_or_create_kk_cache(nu)
-
-        @jax.jit
-        def my_func(k_nu):
-            return kk_n_from_k_wavenumber_fast(nu, k_nu, nu_ref, n_ref, cache=cache)
+        n = kk_n_from_k_wavenumber_fast(nu, k_nu, nu_ref, n_ref, cache=cache)
     """
     nu = jnp.asarray(nu)
     k_nu = jnp.maximum(jnp.asarray(k_nu), 0.0)
@@ -287,24 +337,26 @@ def kk_n_from_k_wavenumber(
     nu_ref: jnp.ndarray,  # scalar, same units as nu
     n_ref: jnp.ndarray,   # scalar
 ) -> jnp.ndarray:
-    """
-    Singly-subtracted Kramers–Kronig relation (optimized version).
+    """Compute `n(ν)` from `k(ν)` via a singly-subtracted KK relation.
 
-    Computes:
-        n(nu_i) = n_ref + (2/pi) * ∫ [ (nu' k(nu') - nu_i k(nu_i))/(nu'^2-nu_i^2)
-                                     - (nu' k(nu') - nu_ref k(nu_ref))/(nu'^2-nu_ref^2) ] dnu'
+    This is a convenience wrapper around `kk_n_from_k_wavenumber_fast()` that
+    looks up the grid cache internally.
 
-    This function now uses the optimized implementation with caching.
-    Principal-value singularities are handled by masking.
+    Parameters
+    ----------
+    nu : `~jax.numpy.ndarray`, shape (N,)
+        Wavenumber grid (strictly increasing), e.g. cm⁻¹.
+    k_nu : `~jax.numpy.ndarray`, shape (N,)
+        Extinction coefficient on the wavenumber grid (clipped to be non-negative).
+    nu_ref : `~jax.numpy.ndarray`
+        Reference wavenumber used to anchor the subtraction term.
+    n_ref : `~jax.numpy.ndarray`
+        Real refractive index at `nu_ref`.
 
-    Notes
-    -----
-    - Still O(N^2) but with reduced constant factors
-    - Grid-dependent quantities are cached for reuse via global registry
-    - For JIT-compiled functions, pre-compute cache and pass explicitly:
-        cache = get_or_create_kk_cache(nu)
-        @jax.jit
-        def f(k): return kk_n_from_k_wavenumber_fast(nu, k, nu_ref, n_ref, cache=cache)
+    Returns
+    -------
+    n_nu : `~jax.numpy.ndarray`, shape (N,)
+        Real refractive index on the wavenumber grid.
     """
     return kk_n_from_k_wavenumber_fast(nu, k_nu, nu_ref, n_ref, cache=None)
 
@@ -316,28 +368,30 @@ def kk_n_from_k_wavelength_um(
     n_ref: jnp.ndarray,
     cache: Optional[KKGridCache] = None,
 ) -> jnp.ndarray:
-    """
-    Convenience wrapper: converts wl[um] -> nu[cm^-1], runs KK in nu-space,
-    returns n on the original wl ordering.
+    """Compute `n(λ)` from `k(λ)` via KK, using wavelength inputs in microns.
+
+    This convenience wrapper converts wavelength to wavenumber via
+    `ν[cm⁻¹] = 10⁴ / λ[μm]`, runs `kk_n_from_k_wavenumber_fast()` in wavenumber
+    space, and returns `n` on the original wavelength ordering.
 
     Parameters
     ----------
-    wl_um : array (N,)
-        Wavelength in microns
-    k_wl : array (N,)
-        Extinction coefficient on wavelength grid
-    wl_ref_um : scalar
-        Reference wavelength in microns
-    n_ref : scalar
-        Refractive index at reference wavelength
-    cache : KKGridCache, optional
-        Precomputed grid quantities for the wavenumber grid.
-        If None, will be looked up from registry. For JIT, pass explicitly.
+    wl_um : `~jax.numpy.ndarray`, shape (N,)
+        Wavelength grid in microns.
+    k_wl : `~jax.numpy.ndarray`, shape (N,)
+        Extinction coefficient on the wavelength grid (clipped to be non-negative).
+    wl_ref_um : `~jax.numpy.ndarray`
+        Reference wavelength in microns used to define `nu_ref`.
+    n_ref : `~jax.numpy.ndarray`
+        Real refractive index at `wl_ref_um`.
+    cache : `~exo_skryer.registry_cloud.KKGridCache`, optional
+        Precomputed grid quantities for the wavenumber grid. If `None`, the
+        cache is obtained via `registry_cloud.get_or_create_kk_cache(nu)`.
 
     Returns
     -------
-    n_wl : array (N,)
-        Real refractive index on wavelength grid
+    n_wl : `~jax.numpy.ndarray`, shape (N,)
+        Real refractive index on the wavelength grid.
     """
     wl_um = jnp.asarray(wl_um)
     k_wl = jnp.maximum(jnp.asarray(k_wl), 0.0)
@@ -365,15 +419,58 @@ def direct_nk(
     state: Dict[str, jnp.ndarray],
     params: Dict[str, jnp.ndarray],
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Compute cloud extinction opacity k_cld(lambda, p) from retrieved k(λ) nodes,
-    with n(λ) computed by brute-force KK anchored at (wl_ref_um, n_ref).
+    """Compute cloud optical properties from retrieved refractive-index nodes.
+
+    This prescription retrieves node values describing the complex refractive
+    index (n, k) as a function of wavelength, interpolates them onto the model
+    wavelength grid, and computes a wavelength-dependent extinction coefficient.
+    A simple vertical profile is applied to modulate the cloud strength with
+    pressure.
+
+    Parameters
+    ----------
+    state : dict[str, `~jax.numpy.ndarray`]
+        Atmospheric state dictionary containing:
+
+        - `wl` : `~jax.numpy.ndarray`, shape (nwl,)
+            Wavelength grid in microns.
+        - `p_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Layer pressures (microbar convention used elsewhere in the forward model).
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing (at minimum) the retrieved node values
+        and cloud-profile controls used in this function, including:
+
+        - `wl_node_0`..`wl_node_7` : float
+            Wavelength nodes (microns).
+        - `n_0`..`n_7` : float
+            Real refractive-index nodes.
+        - `log_10_k_0`..`log_10_k_7` : float
+            Log₁₀ imaginary refractive-index nodes.
+        - `log_10_cld_r` : float
+            Log₁₀ particle radius.
+        - `sigma` : float
+            Log-normal width parameter (clipped to be ≥ 1).
+        - `log_10_q_c_0`, `log_10_H_cld`, `log_10_p_base` : float
+            Vertical profile controls for the cloud strength.
+        - `width_base_dex` : float, optional
+            Transition width around the cloud base (dex).
 
     Returns
     -------
-    k_cld : (nlay, nwl) cloud mass extinction coefficient (your convention)
-    ssa   : (nlay, nwl) single scattering albedo
-    g     : (nlay, nwl) asymmetry parameter (here zeros)
+    k_cld : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Cloud extinction coefficient in cm² g⁻¹.
+    ssa : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Single-scattering albedo derived from (Q_sca / Q_ext).
+    g : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Asymmetry parameter (zeros in this implementation).
+
+    Notes
+    -----
+    The retrieved node curves are interpolated using `aux_funtions.pchip_1d`.
+    To avoid extrapolation artifacts, the contribution is limited to the
+    wavelength span covered by the nodes, with a small floor outside the node
+    support.
     """
     wl = state["wl"]          # (nwl,) in micron
     p_lay = state["p_lay"]    # (nlay,)
@@ -381,7 +478,7 @@ def direct_nk(
     # -----------------------------
     # Retrieved / configured knobs
     # -----------------------------
-    r = 10.0 ** params["log_10_cld_r"]  # particle radius (your units)
+    r = 10.0 ** params["log_10_cld_r"]  # particle radius (um)
     sig = params["sigma"]
     sig = jnp.maximum(sig, 1.0 + 1e-8)  # log-normal width must be >= 1
 
@@ -416,7 +513,7 @@ def direct_nk(
     H_cld = 10.0 ** params["log_10_H_cld"]
     alpha = 1.0 / jnp.maximum(H_cld, 1e-12)
 
-    p_base = 10.0 ** params["log_10_p_base"] * 1e6  # [bar -> Pa], as you had
+    p_base = 10.0 ** params["log_10_p_base"] * 1e6 
     width_base_dex = params.get("width_base_dex", 0.25)
     d_base = jnp.maximum(width_base_dex * jnp.log(10.0), 1e-12)
 
@@ -526,6 +623,42 @@ def direct_nk(
 
 
 def F18_cloud_2(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.ndarray]) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Compute a vertically varying empirical cloud extinction model.
+
+    This is a variant of `F18_cloud()` that applies a pressure-dependent cloud
+    mass-mixing profile (`q_c_lay`) to modulate the extinction with altitude.
+
+    Parameters
+    ----------
+    state : dict[str, `~jax.numpy.ndarray`]
+        Atmospheric state dictionary containing:
+
+        - `wl` : `~jax.numpy.ndarray`, shape (nwl,)
+            Wavelength grid in microns.
+        - `p_lay` : `~jax.numpy.ndarray`, shape (nlay,)
+            Layer pressures (microbar convention used elsewhere in the forward model).
+
+    params : dict[str, `~jax.numpy.ndarray`]
+        Parameter dictionary containing:
+
+        - `log_10_cld_r`, `sigma` : float
+            Particle size distribution parameters.
+        - `cld_Q0`, `cld_a` : float
+            Extinction-efficiency parameters.
+        - `log_10_q_c_0`, `log_10_H_cld`, `log_10_p_base` : float
+            Vertical profile controls for the cloud strength.
+        - `width_base_dex` : float, optional
+            Transition width around the cloud base (dex).
+
+    Returns
+    -------
+    k_cld : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Cloud extinction coefficient in cm² g⁻¹.
+    ssa : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Single-scattering albedo (zeros; pure absorption).
+    g : `~jax.numpy.ndarray`, shape (nlay, nwl)
+        Asymmetry parameter (zeros).
+    """
     wl = state["wl"]
     p_lay = state["p_lay"]
 

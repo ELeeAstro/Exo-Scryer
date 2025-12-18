@@ -1,9 +1,6 @@
 """
 read_yaml.py
 ============
-
-Overview:
-    Reads the YAML configuration file and names a dot namespace for easy accessability.
 """
 
 from pathlib import Path

@@ -1,13 +1,6 @@
 """
 registry_line.py
 ================
-
-Overview:
-    
-
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from __future__ import annotations

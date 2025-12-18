@@ -1,5 +1,6 @@
 """
-[TODO: add documentation]
+vert_chem.py
+============
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from typing import Dict
 
 import jax.numpy as jnp
 
+from .data_constants import amu, kb
 from .rate_jax import RateJAX, get_gibbs_cache
 
 solar_h2 = 0.5
@@ -21,117 +23,98 @@ solar_N = 10.0**(7.83-12.0)
 
 __all__ = [
     "constant_vmr",
-    "build_constant_vmr_kernel",
-    "chemical_equilibrium",
+    "CE_fastchem_jax",
     "CE_rate_jax",
     "quench_approx"
 ]
 
 
-def constant_vmr(
-    p_lay: jnp.ndarray,
-    T_lay: jnp.ndarray,
-    params: Dict[str, jnp.ndarray],
-    nlay: int,
-) -> Dict[str, jnp.ndarray]:
-    """Generate constant volume mixing ratio profiles from parameters.
+def constant_vmr(species_order: tuple[str, ...]):
+    """Build a JIT-optimized function for constant VMR profiles.
+
+    This function creates a chemistry kernel that generates constant (vertically
+    uniform) volume mixing ratio profiles from logarithmic abundance parameters.
+    The returned kernel is optimized for JAX JIT compilation by using a fixed
+    species list determined at build time.
 
     Parameters
     ----------
-    p_lay : `~jax.numpy.ndarray`
-        Layer pressures in bars.
-    T_lay : `~jax.numpy.ndarray`
-        Layer temperatures in Kelvin.
-    params : dict
-        Chemical abundance parameters.
-    nlay : int
-        Number of atmospheric layers.
+    species_order : tuple of str
+        Ordered tuple of trace species names (e.g., ('H2O', 'CH4', 'CO')).
+        For each species, the kernel will expect a parameter named 'log_10_f_<species>'
+        in the params dictionary.
 
     Returns
     -------
-    dict
-        A dictionary mapping species names to their VMR profiles.
-    """
-    del p_lay, T_lay  # unused but kept for consistent signature
+    callable
+        A chemistry kernel function with signature:
+        `kernel(p_lay, T_lay, params, nlay) -> Dict[str, jnp.ndarray]`
 
-    vmr: Dict[str, jnp.ndarray] = {}
-    for k, v in params.items():
-        if k.startswith("log_10_f_"):
-            species = k[len("log_10_f_"):]
-            # Parameter values are already JAX arrays, no need to wrap
-            vmr[species] = 10.0 ** v
+        The kernel takes:
+        - p_lay : Layer pressures (unused but kept for API compatibility)
+        - T_lay : Layer temperatures (unused but kept for API compatibility)
+        - params : Dictionary containing 'log_10_f_<species>' values
+        - nlay : Number of atmospheric layers
 
-    trace_values = list(vmr.values())
-    if trace_values:
-        total_trace_vmr = jnp.sum(jnp.stack(trace_values))
-    else:
-        total_trace_vmr = 0.0
-    background_vmr = 1.0 - total_trace_vmr
+        And returns a dictionary mapping species names to their VMR profiles.
 
-    vmr["H2"] = background_vmr * solar_h2 / solar_h2_he
-    vmr["He"] = background_vmr * solar_he / solar_h2_he
-
-    vmr_lay = {species: jnp.full((nlay,), value) for species, value in vmr.items()}
-    return vmr_lay
-
-
-def build_constant_vmr_kernel(species_order: tuple[str, ...]):
-    """Builds a jitted function for constant VMR profiles.
-
-    Parameters
-    ----------
-    species_order : tuple
-        The order of species.
-
-    Returns
-    -------
-    function
-        A jitted function for constant VMR profiles.
+    Notes
+    -----
+    The background atmosphere (H2/He) is computed to ensure total VMR sums to 1.0,
+    with H2/He ratio fixed at solar values. This is more efficient than the generic
+    version because it avoids runtime dictionary iteration, which is unfriendly to
+    JAX's JIT compiler.
     """
     param_keys = tuple(f"log_10_f_{s}" for s in species_order)
 
-    def _constant_vmr_fixed(p_lay, T_lay, params, nlay):
+    def _constant_vmr_kernel(p_lay, T_lay, params, nlay):
         del p_lay, T_lay
 
-        # Parameter values are already JAX arrays, no need to wrap
+        # Convert log10 abundances to VMR values
         values = [10.0 ** params[k] for k in param_keys]
         trace = jnp.stack(values, axis=0) if values else jnp.zeros((0,), dtype=jnp.float32)
         background = 1.0 - jnp.sum(trace) if values else 1.0
 
+        # Build VMR dictionary with constant profiles for each species
         vmr = {s: jnp.full((nlay,), trace[i]) for i, s in enumerate(species_order)}
         vmr["H2"] = jnp.full((nlay,), background * (solar_h2 / solar_h2_he))
         vmr["He"] = jnp.full((nlay,), background * (solar_he / solar_h2_he))
         return vmr
 
-    return _constant_vmr_fixed
+    return _constant_vmr_kernel
 
 
-def chemical_equilibrium(
+def CE_fastchem_jax(
     p_lay: jnp.ndarray,
     T_lay: jnp.ndarray,
     params: Dict[str, jnp.ndarray],
     nlay: int,
 ) -> Dict[str, jnp.ndarray]:
-    """Placeholder for general chemical equilibrium calculation.
+    """Placeholder for a FastChem-based chemical equilibrium backend (not implemented).
 
     Parameters
     ----------
-    p_lay : `~jax.numpy.ndarray`
-        Layer pressures in bars.
-    T_lay : `~jax.numpy.ndarray`
+    p_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Layer pressures. Units are arbitrary as long as consistent with the
+        solver backend (in this codebase `p_lay` is typically in dyne cm⁻²).
+    T_lay : `~jax.numpy.ndarray`, shape (nlay,)
         Layer temperatures in Kelvin.
-    params : dict
-        Chemical abundance parameters.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Chemical abundance parameters (e.g., metallicity, C/O).
     nlay : int
         Number of atmospheric layers.
 
     Returns
     -------
-    dict
-        A dictionary mapping species names to their VMR profiles.
+    vmr_lay : dict[str, `~jax.numpy.ndarray`]
+        Dictionary mapping species names to VMR profiles with shape (nlay,).
     """
     del p_lay, T_lay, params, nlay
-    raise NotImplementedError("chemical_equilibrium is not implemented yet.")
+    raise NotImplementedError("CE_fastchem_jax is not implemented yet.")
+
+
+# Backwards-compat alias (do not export)
+chemical_equilibrium = CE_fastchem_jax
 
 
 def CE_rate_jax(
@@ -140,23 +123,35 @@ def CE_rate_jax(
     params: Dict[str, jnp.ndarray],
     nlay: int,
 ) -> Dict[str, jnp.ndarray]:
-    """Computes chemical equilibrium profiles using RateJAX solver.
+    """Compute chemical equilibrium profiles using the `RateJAX` solver.
 
     Parameters
     ----------
-    p_lay : `~jax.numpy.ndarray`
-        Layer pressures in bars.
-    T_lay : `~jax.numpy.ndarray`
+    p_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Layer pressures. In the forward model this is typically in dyne cm⁻² and
+        is converted internally to bar for the solver.
+    T_lay : `~jax.numpy.ndarray`, shape (nlay,)
         Layer temperatures in Kelvin.
-    params : dict
-        Chemical abundance parameters.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Chemical abundance parameters containing:
+
+        - `M/H` : float
+            Metallicity relative to solar in dex.
+        - `C/O` : float
+            Carbon-to-oxygen ratio (dimensionless).
     nlay : int
-        Number of atmospheric layers.
+        Number of atmospheric layers (unused; kept for API compatibility).
 
     Returns
     -------
-    dict
-        A dictionary mapping species names to their VMR profiles.
+    vmr_lay : dict[str, `~jax.numpy.ndarray`]
+        Dictionary mapping species names to VMR profiles with shape (nlay,).
+
+    Notes
+    -----
+    This function requires Gibbs free-energy tables to be loaded (see
+    `get_gibbs_cache()`). It calls `RateJAX.solve_profile(T_lay, p_bar)` with
+    `p_bar = p_lay / 1e6`.
     """
     del nlay  # Unused but kept for API compatibility with other vert_chem functions
 
@@ -241,7 +236,7 @@ def _mixing_timescale(
     Kzz : `~jax.numpy.ndarray`
         The eddy diffusion coefficient in cm^2/s.
     mu_bar : `~jax.numpy.ndarray`
-        The mean molecular weight in amu.
+        The mean molecular weight in g mol⁻¹.
     g : float
         The surface gravity in cm/s^2.
 
@@ -250,11 +245,8 @@ def _mixing_timescale(
     `~jax.numpy.ndarray`
         The mixing timescale in seconds.
     """
-    k_B = 1.380649e-16   # Boltzmann constant [erg/K]
-    m_H = 1.6735575e-24  # Hydrogen mass [g]
-
-    mu = mu_bar * m_H  # Mean molecular mass [g]
-    H = (k_B * T_K) / (mu * g)  # Scale height [cm]
+    del p_bar
+    H = (kb * T_K) / (mu_bar * amu * g)  # Scale height [cm]
     tau_mix = (H ** 2) / jnp.maximum(Kzz, 1e-30)  # Avoid division by zero [s]
 
     return tau_mix
@@ -308,23 +300,40 @@ def quench_approx(
     params: Dict[str, jnp.ndarray],
     nlay: int,
 ) -> Dict[str, jnp.ndarray]:
-    """Computes quenched chemical abundance profiles.
+    """Compute quenched chemical abundance profiles.
 
     Parameters
     ----------
-    p_lay : `~jax.numpy.ndarray`
-        Layer pressures in bars.
-    T_lay : `~jax.numpy.ndarray`
+    p_lay : `~jax.numpy.ndarray`, shape (nlay,)
+        Layer pressures. In the forward model this is typically in dyne cm⁻².
+    T_lay : `~jax.numpy.ndarray`, shape (nlay,)
         Layer temperatures in Kelvin.
-    params : dict
-        Chemical abundance parameters.
+    params : dict[str, `~jax.numpy.ndarray`]
+        Chemical abundance parameters containing:
+
+        - `M/H` : float
+            Metallicity relative to solar in dex.
+        - `C/O` : float
+            Carbon-to-oxygen ratio (dimensionless).
+        - `Kzz` : float
+            Eddy diffusion coefficient in cm² s⁻¹.
+        - `log_10_g` : float
+            Log₁₀ surface gravity in cm s⁻².
     nlay : int
-        Number of atmospheric layers.
+        Number of atmospheric layers (unused; kept for API compatibility).
 
     Returns
     -------
-    dict
-        A dictionary mapping species names to their quenched VMR profiles.
+    vmr_lay : dict[str, `~jax.numpy.ndarray`]
+        Dictionary mapping species names to quenched VMR profiles with shape (nlay,).
+
+    Notes
+    -----
+    This routine:
+    1. Computes equilibrium VMRs using `RateJAX`.
+    2. Estimates a single mixing timescale profile `tau_mix`.
+    3. For selected species, computes `tau_chem` and freezes the abundance above
+       the quench level where `tau_chem > tau_mix`.
     """
     del nlay  # Unused but kept for API compatibility
 

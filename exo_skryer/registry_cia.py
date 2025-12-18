@@ -1,12 +1,6 @@
 """
 registry_cia.py
 ===============
-
-Overview:
-
-    - Usage
-    - Key Functions
-    - Notes
 """
 
 from __future__ import annotations

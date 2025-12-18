@@ -1,4 +1,8 @@
-# rate_jax.py
+"""
+rate_jax.py
+===========
+"""
+
 from __future__ import annotations
 from typing import Dict, Mapping, Tuple, Union, Optional
 import os
@@ -29,25 +33,47 @@ __all__ = [
 
 
 class GibbsTableJAX:
-    """
-    JAX-friendly Gibbs free energy interpolator.
+    """JAX-friendly Gibbs free-energy interpolator.
 
-    Expect data as:
-      data[spec] = {
-        "T": jnp.array([...]),          # temperature grid [K]
-        "g_over_R": jnp.array([...]),   # G/R on that grid
-        "heat_over_R298": float,        # (1000 * H_298.15 / R)
-      }
+    The table stores, for each species, a temperature grid and pre-scaled Gibbs
+    and enthalpy terms so that interpolation can be done with `jax.numpy.interp`
+    (no SciPy dependency, JIT-compatible).
 
-    This avoids SciPy splines and uses jax.numpy.interp instead.
+    Notes
+    -----
+    Expected per-species dictionary structure:
+
+    - `T` : `~jax.numpy.ndarray`, shape (nT,)
+        Temperature grid in Kelvin.
+    - `g_over_R` : `~jax.numpy.ndarray`, shape (nT,)
+        Gibbs free energy divided by the molar gas constant, `G/R` (dimensionless).
+    - `heat_over_R298` : float
+        Enthalpy term at 298.15 K scaled as `H_298/R` (dimensionless).
     """
     def __init__(self, data: Mapping[str, Mapping[str, jnp.ndarray]]):
         self.data = data
 
     def g_rt(self, spec: str, T: jnp.ndarray) -> jnp.ndarray:
-        """
-        Dimensionless Gibbs combination similar to your original gRT.eval:
-        g_RT = -G/R + (H_298/R) / T
+        """Evaluate the dimensionless Gibbs combination used by RATE.
+
+        The returned quantity corresponds to:
+
+            g_RT(T) = -G(T)/R + (H_298/R) / T
+
+        where `G(T)` is the molar Gibbs free energy and `H_298` is the molar
+        enthalpy at 298.15 K.
+
+        Parameters
+        ----------
+        spec : str
+            Species key in the Gibbs table (e.g., `"H2O"`).
+        T : `~jax.numpy.ndarray`
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        g_RT : `~jax.numpy.ndarray`
+            Dimensionless Gibbs combination evaluated at `T`.
         """
         d = self.data[spec]
         T_grid      = d["T"]
@@ -63,8 +89,7 @@ class GibbsTableJAX:
 # ============================================================================
 
 def load_gibbs_cache(janaf_dir: str) -> GibbsTableJAX:
-    """
-    Load JANAF thermodynamic tables into global cache.
+    """Load JANAF thermodynamic tables into the global Gibbs cache.
 
     This function should be called once during initialization (e.g., in
     run_retrieval.py) to load and cache the Gibbs free energy data before
@@ -127,8 +152,7 @@ def load_gibbs_cache(janaf_dir: str) -> GibbsTableJAX:
 
 
 def get_gibbs_cache() -> Optional[GibbsTableJAX]:
-    """
-    Get the cached Gibbs free energy table.
+    """Return the cached Gibbs free energy table.
 
     Returns
     -------
@@ -148,8 +172,7 @@ def get_gibbs_cache() -> Optional[GibbsTableJAX]:
 
 
 def clear_gibbs_cache() -> None:
-    """
-    Clear the cached Gibbs free energy table.
+    """Clear the cached Gibbs free energy table.
 
     Useful for freeing memory or reloading with different data.
     """
@@ -158,8 +181,7 @@ def clear_gibbs_cache() -> None:
 
 
 def is_gibbs_cache_loaded() -> bool:
-    """
-    Check if Gibbs cache is loaded.
+    """Return `True` if the Gibbs cache is loaded.
 
     Returns
     -------
@@ -170,10 +192,25 @@ def is_gibbs_cache_loaded() -> bool:
 
 
 class RateJAX:
-    """
-    JAX-friendly version of RATE:
-    - Works on vector T, p.
-    - Returns VMR dictionary.
+    """RATE-style thermochemical equilibrium solver implemented in JAX.
+
+    This class computes equilibrium abundances for a reduced H/C/N/O chemistry
+    network over a 1D (T, p) profile. It is designed to be usable inside
+    JIT-compiled forward models:
+
+    - Uses `jax.vmap` to solve each layer independently
+    - Avoids SciPy; uses `optimistix` for root finding where needed
+    - Returns a VMR dictionary keyed by species name
+
+    Parameters
+    ----------
+    gibbs : `~exo_skryer.rate_jax.GibbsTableJAX`
+        Gibbs free-energy interpolator created by `load_gibbs_cache`.
+    C, N, O : float
+        Elemental abundances (number ratios relative to H₂, following the original
+        RATE conventions).
+    fHe : float
+        Helium fraction factor used to compute He from H-bearing species.
     """
 
     def __init__(
@@ -902,7 +939,7 @@ class RateJAX:
 
     def _choose_poly_index(self, T_i: float, p_i: float):
         """
-        Encodes your logic:
+        Encodes the logic:
 
           0 -> HCO_poly6_CO
           1 -> HCO_poly6_H2O
