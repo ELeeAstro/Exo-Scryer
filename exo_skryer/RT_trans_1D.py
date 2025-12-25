@@ -218,16 +218,9 @@ def compute_transit_depth_1d(
         # Corr-k mode: build total opacity then integrate over g-points
         k_tot = _sum_opacity_components_ck(state, opacity_components)  # (nlay, nwl, ng)
 
-        if contri_func:
-            def _depth_and_layerdR2_for_g(k_slice: jnp.ndarray):
-                # k_slice: (nlay, nwl)
-                return _transit_depth_and_contrib_from_opacity(
-                    state, k_slice, geometry=geometry, want_contrib=True
-                )
-        else:
-            def _depth_for_g(k_slice: jnp.ndarray):
-                # k_slice: (nlay, nwl)
-                return _transit_depth_from_opacity(state, k_slice, geometry=geometry)
+        ng = k_tot.shape[-1]
+        g_weights = _get_ck_weights(state)[:ng]
+        g_indices = jnp.arange(ng)
 
         if "f_cloud" in params and "cloud" in opacity_components:
             f_cloud = jnp.clip(params["f_cloud"], 0.0, 1.0)
@@ -236,50 +229,95 @@ def compute_transit_depth_1d(
                 cloud_component = cloud_component[:, :, None]
             k_no_cloud = k_tot - cloud_component
 
-            # Compute for cloudy and clear atmospheres
-            k_cloud_g = jnp.moveaxis(k_tot, -1, 0)           # (ng, nlay, nwl)
-            k_clear_g = jnp.moveaxis(k_no_cloud, -1, 0)      # (ng, nlay, nwl)
-
-            g_weights = _get_ck_weights(state)[:k_cloud_g.shape[0]]
-
             if contri_func:
-                D_cloud_g, dR2_cloud_g, layer_dR2_cloud_g = jax.vmap(_depth_and_layerdR2_for_g)(k_cloud_g)
-                D_clear_g, dR2_clear_g, layer_dR2_clear_g = jax.vmap(_depth_and_layerdR2_for_g)(k_clear_g)
+                def _scan_body_cloud(carry, inputs):
+                    D_acc, dR2_acc, layer_acc = carry
+                    idx, weight = inputs
+                    k_slice = jnp.take(k_tot, idx, axis=2)
+                    D_i, dR2_i, layer_i = _transit_depth_and_contrib_from_opacity(
+                        state, k_slice, geometry=geometry, want_contrib=True
+                    )
+                    w = weight.astype(D_acc.dtype)
+                    return (D_acc + w * D_i, dR2_acc + w * dR2_i, layer_acc + w * layer_i), None
 
-                D_cloud = jnp.sum(g_weights[:, None] * D_cloud_g, axis=0)
-                D_clear = jnp.sum(g_weights[:, None] * D_clear_g, axis=0)
+                def _scan_body_clear(carry, inputs):
+                    D_acc, dR2_acc, layer_acc = carry
+                    idx, weight = inputs
+                    k_slice = jnp.take(k_no_cloud, idx, axis=2)
+                    D_i, dR2_i, layer_i = _transit_depth_and_contrib_from_opacity(
+                        state, k_slice, geometry=geometry, want_contrib=True
+                    )
+                    w = weight.astype(D_acc.dtype)
+                    return (D_acc + w * D_i, dR2_acc + w * dR2_i, layer_acc + w * layer_i), None
+
+                init = (
+                    jnp.zeros((nwl,), dtype=k_tot.dtype),
+                    jnp.zeros((nwl,), dtype=k_tot.dtype),
+                    jnp.zeros((nlay, nwl), dtype=k_tot.dtype),
+                )
+                (D_cloud, dR2_cloud, layer_dR2_cloud), _ = jax.lax.scan(
+                    _scan_body_cloud, init, (g_indices, g_weights)
+                )
+                (D_clear, dR2_clear, layer_dR2_clear), _ = jax.lax.scan(
+                    _scan_body_clear, init, (g_indices, g_weights)
+                )
+
                 D_net = f_cloud * D_cloud + (1.0 - f_cloud) * D_clear
-
-                dR2_cloud = jnp.sum(g_weights[:, None] * dR2_cloud_g, axis=0)
-                dR2_clear = jnp.sum(g_weights[:, None] * dR2_clear_g, axis=0)
-                layer_dR2_cloud = jnp.sum(g_weights[:, None, None] * layer_dR2_cloud_g, axis=0)
-                layer_dR2_clear = jnp.sum(g_weights[:, None, None] * layer_dR2_clear_g, axis=0)
-
                 dR2 = f_cloud * dR2_cloud + (1.0 - f_cloud) * dR2_clear
                 layer_dR2 = f_cloud * layer_dR2_cloud + (1.0 - f_cloud) * layer_dR2_clear
                 contrib_func_norm = layer_dR2 / jnp.maximum(dR2[None, :], 1e-30)
             else:
-                D_cloud_g = jax.vmap(_depth_for_g)(k_cloud_g)  # (ng, nwl)
-                D_clear_g = jax.vmap(_depth_for_g)(k_clear_g)  # (ng, nwl)
-                D_cloud = jnp.sum(g_weights[:, None] * D_cloud_g, axis=0)
-                D_clear = jnp.sum(g_weights[:, None] * D_clear_g, axis=0)
+                def _scan_body_cloud(carry, inputs):
+                    D_acc = carry
+                    idx, weight = inputs
+                    k_slice = jnp.take(k_tot, idx, axis=2)
+                    D_i = _transit_depth_from_opacity(state, k_slice, geometry=geometry)
+                    w = weight.astype(D_acc.dtype)
+                    return D_acc + w * D_i, None
+
+                def _scan_body_clear(carry, inputs):
+                    D_acc = carry
+                    idx, weight = inputs
+                    k_slice = jnp.take(k_no_cloud, idx, axis=2)
+                    D_i = _transit_depth_from_opacity(state, k_slice, geometry=geometry)
+                    w = weight.astype(D_acc.dtype)
+                    return D_acc + w * D_i, None
+
+                init = jnp.zeros((nwl,), dtype=k_tot.dtype)
+                D_cloud, _ = jax.lax.scan(_scan_body_cloud, init, (g_indices, g_weights))
+                D_clear, _ = jax.lax.scan(_scan_body_clear, init, (g_indices, g_weights))
                 D_net = f_cloud * D_cloud + (1.0 - f_cloud) * D_clear
                 contrib_func_norm = jnp.zeros((nlay, nwl), dtype=D_net.dtype)
         else:
-            k_tot_g = jnp.moveaxis(k_tot, -1, 0)               # (ng, nlay, nwl)
-            g_weights = _get_ck_weights(state)[:k_tot_g.shape[0]]
-
             if contri_func:
-                D_g, dR2_g, layer_dR2_g = jax.vmap(_depth_and_layerdR2_for_g)(k_tot_g)
-                # D_g: (ng, nwl), dR2_g: (ng, nwl), layer_dR2_g: (ng, nlay, nwl)
+                def _scan_body(carry, inputs):
+                    D_acc, dR2_acc, layer_acc = carry
+                    idx, weight = inputs
+                    k_slice = jnp.take(k_tot, idx, axis=2)
+                    D_i, dR2_i, layer_i = _transit_depth_and_contrib_from_opacity(
+                        state, k_slice, geometry=geometry, want_contrib=True
+                    )
+                    w = weight.astype(D_acc.dtype)
+                    return (D_acc + w * D_i, dR2_acc + w * dR2_i, layer_acc + w * layer_i), None
 
-                D_net = jnp.sum(g_weights[:, None] * D_g, axis=0)                       # (nwl,)
-                dR2 = jnp.sum(g_weights[:, None] * dR2_g, axis=0)                   # (nwl,)
-                layer_dR2 = jnp.sum(g_weights[:, None, None] * layer_dR2_g, axis=0) # (nlay, nwl)
+                init = (
+                    jnp.zeros((nwl,), dtype=k_tot.dtype),
+                    jnp.zeros((nwl,), dtype=k_tot.dtype),
+                    jnp.zeros((nlay, nwl), dtype=k_tot.dtype),
+                )
+                (D_net, dR2, layer_dR2), _ = jax.lax.scan(_scan_body, init, (g_indices, g_weights))
                 contrib_func_norm = layer_dR2 / jnp.maximum(dR2[None, :], 1e-30)
             else:
-                D_g = jax.vmap(_depth_for_g)(k_tot_g)  # (ng, nwl)
-                D_net = jnp.sum(g_weights[:, None] * D_g, axis=0)  # (nwl,)
+                def _scan_body(carry, inputs):
+                    D_acc = carry
+                    idx, weight = inputs
+                    k_slice = jnp.take(k_tot, idx, axis=2)
+                    D_i = _transit_depth_from_opacity(state, k_slice, geometry=geometry)
+                    w = weight.astype(D_acc.dtype)
+                    return D_acc + w * D_i, None
+
+                init = jnp.zeros((nwl,), dtype=k_tot.dtype)
+                D_net, _ = jax.lax.scan(_scan_body, init, (g_indices, g_weights))
                 contrib_func_norm = jnp.zeros((nlay, nwl), dtype=D_net.dtype)
     else:
         # LBL mode

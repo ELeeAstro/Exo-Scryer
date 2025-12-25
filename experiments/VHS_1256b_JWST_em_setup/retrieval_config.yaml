@@ -79,10 +79,10 @@ sampling:
   jaxns:
     # ---- core NS config ----
     max_samples: 100000          # hard cap on nested-sampling iterations
-    num_live_points: 100        # live points (posterior resolution)
+    num_live_points: 1000        # live points (posterior resolution)
 
     # Slice sampler hyperparameters
-    s: 6                         # slices per dimension (default ~4)
+    s: 4                         # slices per dimension (default ~4)
     k: 0                         # phantom samples (0 = off, >0 for hard posteriors)
     c: null                       # parallel chains (null -> jaxns default, ~20*D)
     shell_fraction: 0.5          # fraction of shell explored per step (0<sf<=1)
@@ -91,14 +91,14 @@ sampling:
     difficult_model: false       # robust defaults for gnarly posteriors
     parameter_estimation: true   # tune for good posterior, not just evidence
     gradient_guided: false       # use gradients for proposals (only if stable)
-    init_efficiency_threshold: 0.1  # >0: initial uniform sampling until eff>thr
+    init_efficiency_threshold: 0.05  # >0: initial uniform sampling until eff>thr
     verbose: true               # print textual progress to CLI
 
     # ---- termination controls ----
     termination:
       ess: 10000                        # target effective sample size
       evidence_uncert: null            # stop when σ_logZ < 0.3
-      dlogZ: 1.0                     # stop when remaining evidence small
+      dlogZ: 0.1                     # stop when remaining evidence small
       max_samples: 100000             # safety cap for samples
       max_num_likelihood_evaluations: null
       rtol: null

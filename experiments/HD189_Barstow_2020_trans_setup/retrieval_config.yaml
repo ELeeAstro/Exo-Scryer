@@ -61,7 +61,7 @@ params:
 
   - { name: log_10_g, dist: uniform, low: 2.9 , high: 3.4,  transform: logit, init: 3.0}
   - { name: R_p, dist: uniform, low: 0.9,   high: 1.3,  transform: logit, init: 1.0}
-  - { name: T_iso, dist: uniform, low: 100.0,   high: 3000.0, transform: logit, init: 1500.0 }
+  - { name: T_strat, dist: uniform, low: 100.0,   high: 3000.0, transform: logit, init: 1500.0 }
   
   - { name: log_10_f_H2O, dist: uniform, low: -8,   high: -2,  transform: logit, init: -4}
   #- { name: log_10_f_Na, dist: uniform, low: -9,   high: -3,  transform: logit, init: -6}
@@ -101,14 +101,14 @@ sampling:
     difficult_model: false       # robust defaults for gnarly posteriors
     parameter_estimation: true   # tune for good posterior, not just evidence
     gradient_guided: false       # use gradients for proposals (only if stable)
-    init_efficiency_threshold: 0.1  # >0: initial uniform sampling until eff>thr
+    init_efficiency_threshold: 0.05  # >0: initial uniform sampling until eff>thr
     verbose: true               # print textual progress to CLI
 
     # ---- termination controls ----
     termination:
       ess: 10000                        # target effective sample size
       evidence_uncert: null            # stop when σ_logZ < 0.3
-      dlogZ: 1.0                     # stop when remaining evidence small
+      dlogZ: 0.1                     # stop when remaining evidence small
       max_samples: 100000             # safety cap for samples
       max_num_likelihood_evaluations: null
       rtol: null
@@ -125,7 +125,60 @@ sampling:
     dlogz_stop: 0
     seed: 42
 
+  pymultinest:
+    n_live_points: 1000              # Number of live points
+    evidence_tolerance: 0.5          # Evidence tolerance (dlogZ stopping criterion)
+    sampling_efficiency: 0.8         # 0.8 for unimodal, 0.3 for multimodal
+    multimodal: false                # Enable mode separation
+    const_efficiency_mode: false     # Constant efficiency mode
+    importance_nested_sampling: true # Importance nested sampling for posterior
+    resume: false                    # Resume from previous run
+    verbose: true                    # Print progress
+    seed: -1                         # Random seed (-1 = time-based)
+    max_modes: 100                   # Maximum number of modes
+
+  dynesty:
+    nlive: 100                      # Number of live points
+    bound: multi                     # Bounding: multi, single, balls, cubes
+    sample: auto                     # Sampling: auto, unif, rwalk, slice, rslice
+    dlogz: 1.0                       # Evidence tolerance (stopping criterion)
+    maxiter: null                    # Maximum iterations (null = no limit)
+    maxcall: null                    # Maximum likelihood calls (null = no limit)
+    bootstrap: 0                     # Bootstrap iterations
+    enlarge: null                    # Bounding enlargement factor (null = auto)
+    update_interval: null            # Update interval (null = auto)
+    dynamic: false                   # Use dynamic nested sampling
+    print_progress: true             # Show progress bar
+    seed: 42                         # Random seed
+
 runtime:
   platform: cpu           # cpu | gpu | cuda | metal
-  cuda_visible_devices: 1  # or "0,1"
+  cuda_visible_devices: 1 # GPU device ID (only used when platform=gpu)
+
+  # CPU Threading Configuration
+  # ---------------------------
+  # threads: Number of CPU threads for JAX operations (forward model execution)
+  # - Used by ALL samplers when platform=cpu
+  # - Affects: Matrix operations, opacity calculations, radiative transfer
+  # - Recommended: 4-8 threads (diminishing returns beyond 8)
+  # - Sets: XLA intra_op_parallelism_threads
   threads: 1
+
+  # Sampler-Specific Parallelization
+  # ---------------------------------
+  # Note: Different samplers use different parallelization strategies:
+  #
+  # NUTS (NumPyro/BlackJAX):
+  #   - Use 'chains' parameter to run multiple chains in parallel
+  #   - Each chain uses 'threads' for forward model evaluation
+  #   - Total cores used: chains × threads (set accordingly!)
+  #
+  # Dynesty/PyMultiNest:
+  #   - Sequential nested sampling (no built-in threading)
+  #   - Each likelihood call uses 'threads' for forward model
+  #   - Total cores used: threads
+  #
+  # JAXNS/BlackJAX NS:
+  #   - Can batch likelihood evaluations internally (JAX vmap)
+  #   - Each evaluation uses 'threads' for forward model
+  #   - Total cores used: threads (JAX handles batching)

@@ -1,6 +1,6 @@
 [project]
 name = "Exo_Skryer"
-description = "A JAX accelerated retrieval code"
+description = "A JAX accelerated sub-stellar atmosphere retrieval code"
 readme = "README.rst"
 requires-python = ">=3.12"
 license = { file = "LICENSE", content-type = "text/plain" }
@@ -41,9 +41,19 @@ docs = [
     "matplotlib",
     "tox"
 ]
+pymultinest = [
+    "pymultinest"
+]
+dynesty = [
+    "dynesty"
+]
+nested_sampling = [
+    "pymultinest",
+    "dynesty"
+]
 
 [project.urls]
-repository = "https://github.com/eleeastro/exo_skyer"
+repository = "https://github.com/ELeeAstro/Exo_Skryer"
 
 [build-system]
 requires = [
@@ -64,7 +74,7 @@ write_to = "exo_skryer/version.py"
 
 [tool.pytest.ini_options]
 testpaths = [
-  "exo_skyer",
+  "exo_skryer",
   "docs",
 ]
 doctest_plus = "enabled"
@@ -73,18 +83,18 @@ addopts = "--doctest-rst"
 
 [tool.coverage.run]
 omit = [
- "exo_skyer/conftest.py",
- "exo_skyer/*setup_package*",
- "exo_skyer/tests/*",
- "exo_skyer/*/tests/*",
- "exo_skyer/extern/*",
- "exo_skyer/version*",
- "*/exo_skyer/conftest.py",
- "*/exo_skyer/*setup_package*",
- "*/exo_skyer/tests/*",
- "*/exo_skyer/*/tests/*",
- "*/exo_skyer/extern/*",
- "*/exo_skyer/version*",
+ "exo_skryer/conftest.py",
+ "exo_skryer/*setup_package*",
+ "exo_skryer/tests/*",
+ "exo_skryer/*/tests/*",
+ "exo_skryer/extern/*",
+ "exo_skryer/version*",
+ "*/exo_skryer/conftest.py",
+ "*/exo_skryer/*setup_package*",
+ "*/exo_skryer/tests/*",
+ "*/exo_skryer/*/tests/*",
+ "*/exo_skryer/extern/*",
+ "*/exo_skryer/version*",
 ]
 
 [tool.coverage.report]

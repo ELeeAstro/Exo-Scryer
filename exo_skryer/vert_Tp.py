@@ -26,7 +26,6 @@ __all__ = [
     "Guillot",
     "MandS09",
     "picket_fence",
-    "piecewise_polynomial",
     "dry_convective_adjustment"
 ]
 
@@ -112,7 +111,7 @@ def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
     params : dict[str, `~jax.numpy.ndarray`]
         Parameter dictionary containing:
 
-        - `T_iso` : float
+        - `T_strat` : float
             Upper-atmosphere isothermal temperature in Kelvin.
 
     Returns
@@ -123,14 +122,14 @@ def Barstow(p_lev: jnp.ndarray, params: Dict[str, jnp.ndarray]) -> Tuple[jnp.nda
         Temperature at layer midpoints in Kelvin.
     """
     # Parameter values are already JAX arrays, no need to wrap
-    T_iso = params["T_iso"]
+    T_strat = params["T_strat"]
     kappa = 2.0 / 7.0
     p1 = 0.1 * bar
     p2 = 1.0 * bar
     p_for_adiabat = jnp.maximum(p_lev, p1)
-    T_adiabat = T_iso * (p_for_adiabat / p1) ** kappa
-    T_deep = T_iso * (p2 / p1) ** kappa
-    T_lev = jnp.where(p_lev <= p1, T_iso, jnp.where(p_lev <= p2, T_adiabat, T_deep))
+    T_adiabat = T_strat * (p_for_adiabat / p1) ** kappa
+    T_deep = T_strat * (p2 / p1) ** kappa
+    T_lev = jnp.where(p_lev <= p1, T_strat, jnp.where(p_lev <= p2, T_adiabat, T_deep))
     T_lay = 0.5 * (T_lev[:-1] + T_lev[1:])
     return T_lev, T_lay
 

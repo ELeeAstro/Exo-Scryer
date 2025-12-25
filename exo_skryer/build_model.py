@@ -155,7 +155,7 @@ def build_forward_model(
         Tp_kernel = picket_fence
     elif vert_tp_name == "ms09":
         Tp_kernel = MandS09
-    elif vert_tp_name == "milne_2":
+    elif vert_tp_name in ("milne_2", "milne_modified"):
         Tp_kernel = Milne_modified
     else:
         raise NotImplementedError(f"Unknown vert_Tp='{vert_tp_name}'")
@@ -164,12 +164,12 @@ def build_forward_model(
     if vert_alt_raw in (None, "None"):
         raise ValueError("physics.vert_alt must be specified explicitly.")
     vert_alt_name = str(vert_alt_raw).lower()
-    if vert_alt_name in ("constant", "constant_g", "fixed"):
+    if vert_alt_name in ("constant", "constant_g", "fixed", "hypsometric"):
         altitude_kernel = hypsometric
-    elif vert_alt_name in ("variable", "variable_g"):
+    elif vert_alt_name in ("variable", "variable_g", "hypsometric_variable_g"):
         altitude_kernel = hypsometric_variable_g
-    elif vert_alt_name in ("p_ref"):
-        altitude_kernel = hypsometric_variable_g_pref    
+    elif vert_alt_name in ("p_ref", "hypsometric_variable_g_pref"):
+        altitude_kernel = hypsometric_variable_g_pref
     else:
         raise NotImplementedError(f"Unknown altitude scheme='{vert_alt_name}'")
 
@@ -213,7 +213,7 @@ def build_forward_model(
     line_opac_scheme_str = str(line_opac_scheme)
     if line_opac_scheme_str.lower() == "none":
         print(f"[info] Line opacity is None:", line_opac_scheme)
-        line_opac_kernel = zero_line_opacity
+        line_opac_kernel = None
     elif line_opac_scheme_str.lower() == "lbl":
         line_opac_kernel = compute_line_opacity
     elif line_opac_scheme_str.lower() == "ck":
@@ -228,7 +228,7 @@ def build_forward_model(
     ray_opac_scheme_str = str(ray_opac_scheme)
     if ray_opac_scheme_str.lower() == "none":
         print(f"[info] Rayleigh opacity is None:", ray_opac_scheme)
-        ray_opac_kernel = zero_ray_opacity
+        ray_opac_kernel = None
     elif ray_opac_scheme_str.lower() in ("lbl", "ck"):
         ray_opac_kernel = compute_ray_opacity
     else:
@@ -240,7 +240,7 @@ def build_forward_model(
     cia_opac_scheme_str = str(cia_opac_scheme)
     if cia_opac_scheme_str.lower() == "none":
         print(f"[info] CIA opacity is None:", cia_opac_scheme)
-        cia_opac_kernel = zero_cia_opacity
+        cia_opac_kernel = None
     elif cia_opac_scheme_str.lower() in ("lbl", "ck"):
         cia_opac_kernel = compute_cia_opacity
     else:
@@ -252,7 +252,7 @@ def build_forward_model(
     cld_opac_scheme_str = str(cld_opac_scheme)
     if cld_opac_scheme_str.lower() == "none":
         print(f"[info] Cloud opacity is None:", cld_opac_scheme)
-        cld_opac_kernel = zero_cloud_opacity
+        cld_opac_kernel = None
     elif cld_opac_scheme_str.lower() == "grey":
         cld_opac_kernel = grey_cloud
     elif cld_opac_scheme_str.lower() == "powerlaw_cloud":
@@ -269,7 +269,7 @@ def build_forward_model(
     special_opac_scheme = getattr(phys, "opac_special", "on")
     special_opac_scheme_str = str(special_opac_scheme).lower()
     if special_opac_scheme_str in ("none", "off", "false", "0"):
-        special_opac_kernel = zero_special_opacity
+        special_opac_kernel = None
     else:
         special_opac_kernel = compute_special_opacity
 
@@ -390,22 +390,20 @@ def build_forward_model(
         if ck_mix_code is not None:
             state["ck_mix"] = ck_mix_code
 
-        # Opacity components
-        k_line = line_opac_kernel(state, full_params)
-        k_ray = ray_opac_kernel(state, full_params)
-        k_cia = cia_opac_kernel(state, full_params)
-        k_special = special_opac_kernel(state, full_params)
-        k_cld_ext, cld_ssa, cld_g = cld_opac_kernel(state, full_params)
-
-        opacity_components = {
-            "line": k_line,
-            "rayleigh": k_ray,
-            "cia": k_cia,
-            "special": k_special,
-            "cloud": k_cld_ext,
-            "cloud_ssa": cld_ssa,
-            "cloud_g": cld_g,
-        }
+        opacity_components = {}
+        if line_opac_kernel is not None:
+            opacity_components["line"] = line_opac_kernel(state, full_params)
+        if ray_opac_kernel is not None:
+            opacity_components["rayleigh"] = ray_opac_kernel(state, full_params)
+        if cia_opac_kernel is not None:
+            opacity_components["cia"] = cia_opac_kernel(state, full_params)
+        if special_opac_kernel is not None:
+            opacity_components["special"] = special_opac_kernel(state, full_params)
+        if cld_opac_kernel is not None:
+            k_cld_ext, cld_ssa, cld_g = cld_opac_kernel(state, full_params)
+            opacity_components["cloud"] = k_cld_ext
+            opacity_components["cloud_ssa"] = cld_ssa
+            opacity_components["cloud_g"] = cld_g
 
         # Radiative transfer
         # RT kernels always return (spectrum, contrib_func)

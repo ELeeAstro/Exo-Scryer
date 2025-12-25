@@ -55,9 +55,44 @@ def main() -> None:
 
     # Set runtime environment FIRST, before any other imports or function calls
     # This MUST happen before JAX/CUDA initialization
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.runtime.cuda_visible_devices)
     platform = str(cfg.runtime.platform)  # "cpu" or "gpu"
-    print(f"[info] Setting CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
+
+    # Configure platform-specific settings
+    if platform == "cpu":
+        # CPU: Multi-threading + fast math + MKL-DNN
+        n_threads = int(getattr(cfg.runtime, "threads", 1))
+        xla_flags = (
+            f"--xla_cpu_multi_thread_eigen=true "
+            f"intra_op_parallelism_threads={n_threads} "
+            f"--xla_cpu_enable_fast_math=true "
+            f"--xla_cpu_use_mkl_dnn=true "
+            f"--xla_force_host_platform_device_count={n_threads}"
+        )
+        os.environ["XLA_FLAGS"] = xla_flags
+        print(f"[info] Platform: CPU ({n_threads} threads)")
+        print(f"[info] XLA CPU: fast_math, MKL-DNN enabled")
+    else:
+        # GPU: Set CUDA device and optimization flags
+        cuda_devices = str(cfg.runtime.cuda_visible_devices)
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+        print(f"[info] Platform: GPU (CUDA_VISIBLE_DEVICES={cuda_devices})")
+
+        # GPU optimization flags
+        xla_flags = (
+            "--xla_gpu_strict_conv_algorithm_picker=false "
+            "--xla_gpu_enable_fast_min_max=true "
+            "--xla_gpu_enable_latency_hiding_scheduler=true "
+            "--xla_gpu_autotune_level=4 "
+            "--xla_gpu_deterministic_ops=false"
+        )
+        os.environ["XLA_FLAGS"] = xla_flags
+
+        # GPU memory management
+        os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+        os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
+
+        print(f"[info] XLA GPU: autotune_level=4, latency hiding, non-deterministic ops")
+        print(f"[info] First GPU run will be slower (auto-tuning), then cached")
 
     # Print main yaml parameters to command line (after setting environment)
     from .help_print import print_cfg
@@ -154,8 +189,19 @@ def main() -> None:
         # BlackJAX nested-sampling driver
         from .sampler_blackjax_NS import run_nested_blackjax
         samples_dict, evidence_info = run_nested_blackjax(cfg, prep, exp_dir)
+
+    elif engine == "pymultinest":
+        # PyMultiNest nested-sampling driver
+        from .sampler_pymultinest_NS import run_nested_pymultinest
+        samples_dict, evidence_info = run_nested_pymultinest(cfg, prep, exp_dir)
+
+    elif engine == "dynesty":
+        # Dynesty nested-sampling driver
+        from .sampler_dynesty_NS import run_nested_dynesty
+        samples_dict, evidence_info = run_nested_dynesty(cfg, prep, exp_dir)
+
     else:
-        raise ValueError(f"Unknown sampling.engine: {engine!r}")
+        raise ValueError(f"Unknown sampling.engine: {engine!r}. Options: nuts, jaxns, blackjax_ns, pymultinest, dynesty")
 
     print(f"[info] Finished Sampling")
 

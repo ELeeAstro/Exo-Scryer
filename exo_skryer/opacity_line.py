@@ -61,9 +61,10 @@ def _interpolate_sigma(layer_pressures_bar: jnp.ndarray, layer_temperatures: jnp
     temperature_grids = XS.line_temperature_grids()
 
     # Convert to log10 space for interpolation
-    log_p_grid = jnp.log10(pressure_grid)
-    log_p_layers = jnp.log10(layer_pressures_bar)
-    log_t_layers = jnp.log10(layer_temperatures)
+    sigma_dtype = sigma_cube.dtype
+    log_p_grid = jnp.log10(pressure_grid).astype(sigma_dtype)
+    log_p_layers = jnp.log10(layer_pressures_bar).astype(sigma_dtype)
+    log_t_layers = jnp.log10(layer_temperatures).astype(sigma_dtype)
 
     # Find pressure bracket indices and weights in log space (same for all species)
     p_idx = jnp.searchsorted(log_p_grid, log_p_layers) - 1
@@ -219,18 +220,55 @@ def compute_line_opacity(state: Dict[str, jnp.ndarray], params: Dict[str, jnp.nd
     # Get species names and mixing ratios
     species_names = XS.line_species_names()
     layer_count = layer_pressures.shape[0]
+    sigma_cube = XS.line_sigma_cube()
+    pressure_grid = XS.line_pressure_grid()
+    temperature_grids = XS.line_temperature_grids()
 
     # Direct lookup - species names must match VMR keys exactly
     # VMR values are already JAX arrays, no need to wrap
     mixing_ratios = jnp.stack(
         [jnp.broadcast_to(layer_vmr[name], (layer_count,)) for name in species_names],
         axis=0,
+    ).astype(sigma_cube.dtype)
+
+    layer_pressures_bar = layer_pressures / 1e6
+    log_p_grid = jnp.log10(pressure_grid)
+    log_p_layers = jnp.log10(layer_pressures_bar)
+    log_t_layers = jnp.log10(layer_temperatures)
+
+    p_idx = jnp.searchsorted(log_p_grid, log_p_layers) - 1
+    p_idx = jnp.clip(p_idx, 0, log_p_grid.shape[0] - 2)
+    p_weight = (log_p_layers - log_p_grid[p_idx]) / (log_p_grid[p_idx + 1] - log_p_grid[p_idx])
+    p_weight = jnp.clip(p_weight, 0.0, 1.0)
+
+    def _interp_one_species(sigma_3d, temp_grid):
+        log_t_grid = jnp.log10(temp_grid).astype(sigma_3d.dtype)
+        t_idx = jnp.searchsorted(log_t_grid, log_t_layers) - 1
+        t_idx = jnp.clip(t_idx, 0, log_t_grid.shape[0] - 2)
+        t_weight = (log_t_layers - log_t_grid[t_idx]) / (log_t_grid[t_idx + 1] - log_t_grid[t_idx])
+        t_weight = jnp.clip(t_weight, 0.0, 1.0)
+
+        s_t0_p0 = sigma_3d[t_idx, p_idx, :]
+        s_t0_p1 = sigma_3d[t_idx, p_idx + 1, :]
+        s_t1_p0 = sigma_3d[t_idx + 1, p_idx, :]
+        s_t1_p1 = sigma_3d[t_idx + 1, p_idx + 1, :]
+
+        s_t0 = (1.0 - p_weight)[:, None] * s_t0_p0 + p_weight[:, None] * s_t0_p1
+        s_t1 = (1.0 - p_weight)[:, None] * s_t1_p0 + p_weight[:, None] * s_t1_p1
+        s_interp = (1.0 - t_weight)[:, None] * s_t0 + t_weight[:, None] * s_t1
+        return (10.0 ** s_interp).astype(sigma_3d.dtype)
+
+    def _scan_body(carry, inputs):
+        sigma_3d, temp_grid, vmr = inputs
+        sigma_interp = _interp_one_species(sigma_3d, temp_grid)
+        carry = carry + sigma_interp * vmr[:, None]
+        return carry, None
+
+    nwl = sigma_cube.shape[-1]
+    weighted_sigma_init = jnp.zeros((layer_count, nwl), dtype=sigma_cube.dtype)
+    weighted_sigma, _ = jax.lax.scan(
+        _scan_body,
+        weighted_sigma_init,
+        (sigma_cube, temperature_grids, mixing_ratios),
     )
-
-    # Interpolate cross sections for all species at layer conditions
-    # sigma_values shape: (n_species, n_layers, n_wavelength)
-    sigma_values = _interpolate_sigma(layer_pressures / 1e6, layer_temperatures)
-
-    # Sum over species, then apply mean-molecular-weight normalization
-    weighted_sigma = jnp.sum(sigma_values * mixing_ratios[:, :, None], axis=0)
     return weighted_sigma / (layer_mu[:, None] * amu)
